@@ -1,0 +1,4 @@
+# Notebook files are rewritten by editors (IDE, Colab) that replace CRLF with LF
+# on every save. Store them normalized to LF in the repository and check them out
+# with CRLF, so a line-ending-only re-save no longer appears as a whole-file diff.
+*.ipynb text eol=crlf
