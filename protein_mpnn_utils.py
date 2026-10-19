@@ -277,10 +277,55 @@ def parse_PDB_biounits(
         return None, None
 
 def parse_PDB(path_to_pdb, input_chain_list=None, ca_only=False):
-    # Parse a single PDB file and return a list of dicts with sequence and backbone coordinates.
-    # path_to_pdb:     path to the .pdb file
-    # input_chain_list: list of chain IDs to parse (e.g. ["A"]); if None, exhaustively try all candidates
-    # ca_only:         if True, extract only C-alpha atoms; otherwise N, CA, C, O backbone atoms
+    '''
+    Parse a single PDB file into the ``seq_chain_X`` / ``coords_chain_X`` dict format.
+
+    Candidate chains are probed one by one with ``parse_PDB_biounits`` and only those that
+    actually contain matching ATOM records are kept, so a file with unused chain IDs does
+    not produce empty entries. Coordinates are stored as plain Python lists rather than
+    NumPy arrays, which keeps the returned dicts JSON-serialisable; ``tied_featurize``
+    converts them back with ``np.array``.
+
+    Args:
+        path_to_pdb: path to the PDB file (text format).
+        input_chain_list: chain IDs to parse, e.g. ``['A', 'B']``. When None (default),
+            every candidate name is probed exhaustively: ``A``-``Z``, ``a``-``z``, then the
+            numeric names ``'0'``-``'299'``.
+        ca_only: if True, store only the C-alpha atom per residue; otherwise the full
+            backbone ``['N', 'CA', 'C', 'O']`` is extracted.
+
+    Returns:
+        list[dict]: one dict per parsed file. The outer loop currently runs over a single
+        file, so the list normally holds exactly one entry. Each dict has the keys below,
+        inserted chain by chain in the order the chains were probed:
+
+        - ``'seq_chain_<ID>'``: one-letter sequence of chain ``<ID>``, with ``'-'`` for
+          missing/unknown residues.
+        - ``'coords_chain_<ID>'``: per-chain coordinate sub-dict. With ``ca_only=True`` it
+          holds only ``'CA_chain_<ID>'``; otherwise it holds ``'N_chain_<ID>'``,
+          ``'CA_chain_<ID>'``, ``'C_chain_<ID>'`` and ``'O_chain_<ID>'``. Each value is a
+          ``list[list[float]]`` of length ``n_residues`` (0-based residue order) whose inner
+          list is the ``[x, y, z]`` position; atoms missing from the file are ``[nan, nan, nan]``.
+        - ``'name'``: structure name, obtained by dropping the trailing ``'.pdb'`` suffix
+          from ``path_to_pdb`` (see Notes).
+        - ``'num_of_chains'``: number of chains successfully parsed from this file.
+        - ``'seq'``: concatenation of the per-chain sequences listed above.
+
+        Chains absent from the file are simply omitted, so their keys are absent too.
+
+    Notes:
+        ``'name'`` is the bare file name with the ``'.pdb'`` extension removed, taken with
+        ``os.path.basename`` so the separator convention of the running platform applies,
+        e.g. ``'inputs/PDB_monomers/pdbs/5L33.pdb'`` -> ``'5L33'``.
+
+    Examples:
+        >>> parse_PDB('inputs/PDB_monomers/pdbs/5L33.pdb', input_chain_list=['A'], ca_only=True)
+        [{'seq_chain_A': 'HMPEEEKAARLF...NGRIKRVTITHV',
+          'coords_chain_A': {'CA_chain_A': [[36.936, 18.773, 53.168], ..., [3.735, 10.392, 57.071]]},
+          'name': '5L33',
+          'num_of_chains': 1,
+          'seq': 'HMPEEEKAARLF...NGRIKRVTITHV'}]
+    '''
     # c: counter of successfully parsed structures (unused, kept from original implementation)
     c=0
     # list that holds the parsed dict for each PDB file; this is the return value
@@ -344,10 +389,11 @@ def parse_PDB(path_to_pdb, input_chain_list=None, ca_only=False):
                 my_dict['coords_chain_'+letter]=coords_dict_chain
                 # increment the parsed-chain counter
                 s += 1
-        # find the last "/" in the path to strip the directory prefix
-        fi = biounit.rfind("/")
-        # take the file name and remove the trailing 4 characters (".pdb") to get the structure name
-        my_dict['name']=biounit[(fi+1):-4]
+        # strip the directory prefix using the platform's own path rules: os.path.basename
+        # handles both separator styles on Windows and the POSIX separator on Linux
+        pdb_file_name = os.path.basename(biounit)
+        # remove the ".pdb" extension to get the structure name
+        my_dict['name'] = os.path.splitext(pdb_file_name)[0]
         # record the total number of chains found in this file
         my_dict['num_of_chains'] = s
         # store the concatenated sequence of all chains
