@@ -13,7 +13,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import random
 import itertools
-from typing import Any
+from typing import Any, NamedTuple
 from constants import PROTEIN_ALPHABET, PROTEIN_ALPHABET_WITH_GAP
 
 #A number of functions/classes are adopted from: https://github.com/jingraham/neurips19-graph-protein-design
@@ -408,6 +408,58 @@ def parse_PDB(path_to_pdb, input_chain_list=None, ca_only=False):
     return pdb_dict_list
 
 
+class TiedFeatures(NamedTuple):
+    """Packed batch returned by :func:`tied_featurize`.
+
+    Field order is the historical positional order of that function, so callers may
+    either read fields by name (``features.chain_M``) or keep unpacking the bundle
+    positionally. Field names follow the public names documented in
+    :func:`tied_featurize`; where the function builds a value under a more
+    descriptive local name, the mapping is noted on the corresponding field.
+    """
+
+    # Padded backbone coordinates, [B, L, 4, 3] for N/CA/C/O or [B, L, 3] in CA-only mode
+    X: torch.Tensor
+    # Integer-encoded amino-acid sequence, [B, L] (index into PROTEIN_ALPHABET)
+    S: torch.Tensor
+    # Per-residue validity mask, [B, L] (1.0 when all backbone atoms are present)
+    mask: torch.Tensor
+    # Total residue count per entry, [B] (numpy int32, intentionally not a tensor)
+    sequence_lengths: np.ndarray
+    # Chain-level design mask, [B, L]; internal name is chain_level_design_mask
+    chain_M: torch.Tensor
+    # Integer chain id per residue, [B, L]
+    chain_encoding_all: torch.Tensor
+    # Chain letters of every chain, one inner list per structure
+    all_chain_letters_per_entry: list[list[str]]
+    # Visible (fixed context) chain letters, one inner list per structure
+    visible_chain_letters_per_entry: list[list[str]]
+    # Masked (designed) chain letters, one inner list per structure
+    masked_chain_letters_per_entry: list[list[str]]
+    # Residue length of each masked chain, one inner list per structure
+    masked_chain_lengths_per_entry: list[list[int]]
+    # Per-position design mask, [B, L]; internal name is position_level_design_mask
+    chain_M_pos: torch.Tensor
+    # Omitted amino-acid mask, [B, L, num_amino_acid_types]
+    omit_AA_mask: torch.Tensor
+    # Per-residue numbering, [B, L] (-100 marks padding)
+    residue_idx: torch.Tensor
+    # Phi/psi/omega validity mask, [B, L, 3]
+    dihedral_mask: torch.Tensor
+    # Tied-position groups per entry; innermost list holds the 0-based residues tied together
+    tied_position_groups_per_entry: list[list[list[int]]]
+    # PSSM mixing coefficient, [B, L]
+    pssm_coef_all: torch.Tensor
+    # PSSM per-position bias, [B, L, num_amino_acid_types]
+    pssm_bias_all: torch.Tensor
+    # PSSM log-odds, [B, L, num_amino_acid_types]
+    pssm_log_odds_all: torch.Tensor
+    # Per-residue amino-acid bias, [B, L, num_amino_acid_types]
+    bias_by_res_all: torch.Tensor
+    # Tied-position weighting, [B, L] (1.0 = uniform weight)
+    tied_position_weight: torch.Tensor
+
+
 def tied_featurize(
     pdb_dict_list: list[dict[str, Any]],
     device: torch.device,
@@ -418,7 +470,7 @@ def tied_featurize(
     pssm_dict: dict[str, Any] | None = None,
     bias_by_res_dict: dict[str, dict[str, np.ndarray]] | None = None,
     ca_only: bool = False
-) -> tuple:
+) -> TiedFeatures:
     '''
     Pack and pad a batch of parsed PDB entries into torch tensors.
 
@@ -453,8 +505,11 @@ def tied_featurize(
         ca_only: if True, featurize CA atoms only instead of N/CA/C/O.
 
     Returns:
-        Tuple of 20 items. Shape notation below refers to the batch, which is
-        the input ``pdb_dict_list`` (a list of parsed PDB entries):
+        TiedFeatures, a ``NamedTuple`` holding the 20 fields listed below. Fields can
+        be read by name (e.g. ``features.chain_M``); the field order also matches the
+        historical positional order, so tuple-style unpacking still works. Shape
+        notation below refers to the batch, which is the input ``pdb_dict_list``
+        (a list of parsed PDB entries):
 
         - ``B``: batch axis, the number of structures in the batch, i.e.
           ``len(pdb_dict_list)`` (local variable ``num_pdb_structures``)
@@ -465,7 +520,7 @@ def tied_featurize(
           ``len(PROTEIN_ALPHABET)`` = 21 (20 standard residues + ``X``); it is
           the last-axis size of every per-amino-acid tensor below
 
-        1. ``X_out`` (torch.Tensor, float32): padded backbone atom coordinates
+        1. ``X`` (torch.Tensor, float32, local variable ``X_out``): padded backbone atom coordinates
            [B, L, 4, 3], where 4 = the N/CA/C/O atoms and 3 = the (x, y, z)
            components; in ``ca_only`` mode the atom axis is squeezed, giving
            [B, L, 3] (CA only)
@@ -996,8 +1051,30 @@ def tied_featurize(
         X_out: torch.Tensor = backbone_atom_coordinates[:, :, 0]
     else:
         X_out = backbone_atom_coordinates
-    # Return the packed pdb_dict_list (see the docstring for the item-by-item layout)
-    return X_out, residue_type_indices, valid_residue_mask, sequence_lengths, chain_level_design_mask, chain_encoding_all, all_chain_letters_per_entry, visible_chain_letters_per_entry, masked_chain_letters_per_entry, masked_chain_lengths_per_entry, position_level_design_mask, omit_AA_mask, residue_idx, dihedral_mask, tied_position_groups_per_entry, pssm_coef_all, pssm_bias_all, pssm_log_odds_all, bias_by_res_all, tied_position_weight
+    # Bundle the packed batch; keyword construction keeps the field-to-variable
+    # mapping explicit instead of relying on the positional order below
+    return TiedFeatures(
+        X=X_out,  # local name is X_out
+        S=residue_type_indices,  # local name is residue_type_indices
+        mask=valid_residue_mask,  # local name is valid_residue_mask
+        sequence_lengths=sequence_lengths,
+        chain_M=chain_level_design_mask,  # local name is chain_level_design_mask
+        chain_encoding_all=chain_encoding_all,
+        all_chain_letters_per_entry=all_chain_letters_per_entry,
+        visible_chain_letters_per_entry=visible_chain_letters_per_entry,
+        masked_chain_letters_per_entry=masked_chain_letters_per_entry,
+        masked_chain_lengths_per_entry=masked_chain_lengths_per_entry,
+        chain_M_pos=position_level_design_mask,  # local name is position_level_design_mask
+        omit_AA_mask=omit_AA_mask,
+        residue_idx=residue_idx,
+        dihedral_mask=dihedral_mask,
+        tied_position_groups_per_entry=tied_position_groups_per_entry,
+        pssm_coef_all=pssm_coef_all,
+        pssm_bias_all=pssm_bias_all,
+        pssm_log_odds_all=pssm_log_odds_all,
+        bias_by_res_all=bias_by_res_all,
+        tied_position_weight=tied_position_weight,
+    )
 
 
 def loss_nll(S, log_probs, mask):
