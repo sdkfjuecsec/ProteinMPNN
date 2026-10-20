@@ -477,31 +477,111 @@ def tied_featurize(
     Args:
         pdb_dict_list: the batch to featurize, i.e. a list of parsed PDB entry
             dicts (output of ``parse_PDB``), each holding ``seq_chain_X`` and
-            ``coords_chain_X`` keys.
-        device: torch device on which the returned tensors are placed.
+            ``coords_chain_X`` keys for every chain ``X``. E.g. one entry for
+            ``1abc`` with chains A, B and C (coordinates abbreviated with ``...``):
+                {
+                    'name': '1abc',
+                    'seq': 'AAAA...BBBB...CCCC...',               # all chains concatenated
+                    'seq_chain_A': 'AAAA...',                     # [chain_length]
+                    'coords_chain_A': {                           # one key per backbone atom
+                        'CA_chain_A': [[-13.3, 7.6, 1.1], ...],   # [chain_length, 3]
+                        ...                                       # also N, C and O
+                    },
+                    'seq_chain_B': 'BBBB...',
+                    'coords_chain_B': {...},
+                    'seq_chain_C': 'CCCC...',
+                    'coords_chain_C': {...},
+                }
+        device: torch device on which the returned tensors are placed, e.g.
+            ``torch.device('cuda:0')``.
         chain_dict: optional mapping of structure name to a
             ``(masked_chain_letters, visible_chain_letters)`` pair; masked chains are
-            (re)designed, visible chains are kept fixed as context.
-        fixed_position_dict: optional per-chain list of 1-based residue
-            positions that must keep their native amino acid.
+            (re)designed, visible chains are kept fixed as context (both lists are
+            sorted internally, so their input order does not matter). An omitted dict
+            (None) treats every parsed chain as masked, i.e. designs everything. E.g.
+            for entry ``1abc``, design chains A and B while keeping C as context:
+                {
+                    '1abc': (['A', 'B'], ['C']),
+                }
+        fixed_position_dict: optional mapping of structure name to chain letter to
+            the list of 1-based, chain-local residue positions that must keep their
+            native amino acid. Positions are counted from 1 along that chain's own
+            sequence. Only masked chains are consulted, but every masked chain must be
+            listed (an empty list ``[]`` leaves that chain fully free); an omitted
+            dict (None) pins nothing. E.g. pin residues 1, 2 and 3 of chain A while
+            leaving chain B free:
+                {
+                    '1abc': {
+                        'A': [1, 2, 3],
+                        'B': [],
+                    },
+                }
         omit_AA_dict: optional per-chain amino-acid omission constraints. Maps PDB
             name to chain letter to a list of ``(positions, letters)`` rules;
             each rule pairs a list of 1-based residue positions with the list
             of amino-acid letters forbidden at those positions. Each pair is a
-            2-element array, exactly as decoded from JSON; e.g. entry ``1abc``
-            chain ``A``:
+            2-element array, exactly as decoded from JSON, and every masked chain must
+            be listed (an empty list omits nothing); e.g. entry ``1abc``, forbidding
+            A and W at residues 1, 3 and 5 and C at residue 10 of chain A:
                 {
                     '1abc': {
                         'A': [
                             [[1, 3, 5], ['A', 'W']],  # forbid A and W at residues 1, 3, 5
                             [[10], ['C']],           # forbid C at residue 10
                         ],
+                        'B': [],
                     },
                 }
-        tied_positions_dict: optional tied-position groups forcing identical
-            amino acids across chains (homomer design).
-        pssm_dict: optional per-chain PSSM data (coef/bias/log-odds).
-        bias_by_res_dict: optional per-position amino-acid bias arrays.
+        tied_positions_dict: optional tied-position groups forcing identical amino
+            acids across chains (homomer design). Maps structure name to a list of
+            groups; each group maps a chain letter to its tied 1-based, chain-local
+            positions (numbered as in ``fixed_position_dict``, and a group may span two
+            or more chains). All positions of one group are decoded as a single step
+            and must receive the exact same residue. A chain value is either a plain
+            list of positions (weight 1.0 everywhere) or a ``[positions, weights]``
+            pair, whose weights are written into the matching slots of
+            ``tied_position_weight``. Unlike the dicts above it is keyed by structure
+            name only, so chain letters can be listed per group. E.g. tie A1/A2/A3 to
+            B1/B2/B3, and in a second group tie A5/A6 to B5/B6 down-weighting residue 6
+            to 0.5:
+                {
+                    '1abc': [
+                        {'A': [1, 2, 3], 'B': [1, 2, 3]},      # plain form, weight 1.0
+                        {'A': [[5, 6], [1.0, 0.5]],            # weighted form
+                         'B': [[5, 6], [1.0, 0.5]]},
+                    ],
+                }
+        pssm_dict: optional per-chain PSSM data (coef/bias/log-odds). Maps structure
+            name to chain letter to a dict holding the keys ``'pssm_coef'``
+            (shape ``[chain_length]``), ``'pssm_bias'`` and ``'pssm_log_odds'``
+            (shape ``[chain_length, num_amino_acid_types]``, i.e. ``[chain_length, 21]``).
+            Only masked chains are consulted, but every masked chain must be listed;
+            a chain mapped to a falsy value (e.g. an empty dict) keeps the neutral
+            defaults, namely a zero coefficient, a zero bias and log-odds 10000.0
+            (unconstrained). E.g. chain A of entry ``1abc`` is 10 residues long and
+            stays unconstrained, and chain B is listed as unconstrained too:
+                {
+                    '1abc': {
+                        'A': {
+                            'pssm_coef': np.zeros(10),                    # [10]
+                            'pssm_bias': np.zeros((10, 21)),              # [10, 21]
+                            'pssm_log_odds': 10000.0 * np.ones((10, 21)), # [10, 21]
+                        },
+                        'B': {},
+                    },
+                }
+        bias_by_res_dict: optional mapping of structure name to chain letter to a
+            per-residue amino-acid bias array of shape
+            ``[chain_length, num_amino_acid_types]`` (i.e. ``[chain_length, 21]``) that
+            is added to the model logits. Only masked chains are consulted, but every
+            masked chain must be listed, and an omitted dict (None) leaves every chain
+            unbiased. E.g. both masked chains of ``1abc`` (10 residues each) unbiased:
+                {
+                    '1abc': {
+                        'A': np.zeros((10, 21)),  # [10, 21], 0.0 = no bias
+                        'B': np.zeros((10, 21)),
+                    },
+                }
         ca_only: if True, featurize CA atoms only instead of N/CA/C/O.
 
     Returns:
@@ -512,10 +592,12 @@ def tied_featurize(
         (a list of parsed PDB entries):
 
         - ``B``: batch axis, the number of structures in the batch, i.e.
-          ``len(pdb_dict_list)`` (local variable ``num_pdb_structures``)
+          ``len(pdb_dict_list)`` (local variable ``B``); note that the chain
+          letter ``'B'`` used elsewhere in this docstring is a different thing
         - ``L``: length axis, the maximum total number of residues in an entry
           across the batch (summed over all chains), to which every entry is
-          padded (local variable ``max_sequence_length``)
+          padded (local variable ``L``); the unpadded length of the entry being
+          processed is the local variable ``entry_sequence_length``
         - ``num_amino_acid_types``: size of the amino-acid alphabet, i.e.
           ``len(PROTEIN_ALPHABET)`` = 21 (20 standard residues + ``X``); it is
           the last-axis size of every per-amino-acid tensor below
@@ -602,74 +684,84 @@ def tied_featurize(
         20. ``tied_position_weight`` (torch.Tensor, float32): tied-position weighting
             [B, L] (1.0 = uniform weight)
     '''
+    # Shape notation used below:
+    #   B = number of PDB structures packed into one batch (batch axis); this is
+    #       unrelated to the chain letter 'B' mentioned in the examples above
+    #   L = maximum total sequence length across the batch (padded residue axis)
+    #   C = chain_length (residues of a single chain)
+    #   num_amino_acid_types = len(alphabet) = 21 (amino-acid axis)
     # Amino-acid alphabet used to convert one-letter codes into integer labels
     alphabet: str = PROTEIN_ALPHABET
     # Number of amino-acid classes: 20 standard residues plus the unknown code X.
     # Derived from the alphabet so that every last-axis dimension tracks the
     # single source of truth instead of hard-coding the value 21.
     num_amino_acid_types: int = len(alphabet)
-    # Number of PDB structures packed into the output tensors
-    num_pdb_structures: int = len(pdb_dict_list)
-    # Total sequence length (sum over chains) of each PDB structure
+    # Number of PDB structures packed into the output tensors (batch axis)
+    B: int = len(pdb_dict_list)
+    # Total sequence length (sum over chains) of each PDB structure, shape [B]
     sequence_lengths: np.ndarray = np.array([len(pdb_dict['seq']) for pdb_dict in pdb_dict_list], dtype=np.int32)
     # Longest sequence across the packed structures; all tensors are padded to it
-    max_sequence_length: int = max([len(pdb_dict['seq']) for pdb_dict in pdb_dict_list])
+    L: int = max([len(pdb_dict['seq']) for pdb_dict in pdb_dict_list])
     # Allocate the coordinate array with one row per residue
     if ca_only:
-        # CA-only layout [num_pdb_structures, max_sequence_length, 1, 3]
-        backbone_atom_coordinates: np.ndarray = np.zeros([num_pdb_structures, max_sequence_length, 1, 3])
+        # CA-only layout [B, L, 1, 3]
+        backbone_atom_coordinates: np.ndarray = np.zeros([B, L, 1, 3])
     else:
-        # Full backbone layout [num_pdb_structures, max_sequence_length, 4, 3] holding N, CA, C, O
-        backbone_atom_coordinates = np.zeros([num_pdb_structures, max_sequence_length, 4, 3])
-    # Residue numbering per position; -100 marks padding and chain breaks
-    residue_idx: np.ndarray = -100 * np.ones([num_pdb_structures, max_sequence_length], dtype=np.int32)
-    # Chain-level design switch, shape [num_pdb_structures, max_sequence_length].
+        # Full backbone layout [B, L, 4, 3] holding N, CA, C, O
+        backbone_atom_coordinates = np.zeros([B, L, 4, 3])
+    # Residue numbering per position [B, L]; -100 marks padding and chain breaks
+    residue_idx: np.ndarray = -100 * np.ones([B, L], dtype=np.int32)
+    # Chain-level design switch, shape [B, L].
     # All residues of one chain share a single value: 
     # 1.0 when the chain is selected for design (a "masked" chain), 
     # 0.0 when the chain is kept as fixed context(a "visible" chain). 
     # It answers only "which chains", never "which residues".
-    chain_level_design_mask: np.ndarray = np.zeros([num_pdb_structures, max_sequence_length], dtype=np.int32)
-    # PSSM mixing coefficient per position
-    pssm_coef_all: np.ndarray = np.zeros([num_pdb_structures, max_sequence_length], dtype=np.float32)
-    # PSSM per-position amino-acid bias
-    pssm_bias_all: np.ndarray = np.zeros([num_pdb_structures, max_sequence_length, num_amino_acid_types], dtype=np.float32)
-    # PSSM log-odds; a large positive default leaves positions unconstrained
-    pssm_log_odds_all: np.ndarray = 10000.0 * np.ones([num_pdb_structures, max_sequence_length, num_amino_acid_types], dtype=np.float32)
-    # Residue-level design mask, shape [num_pdb_structures, max_sequence_length].
+    chain_level_design_mask: np.ndarray = np.zeros([B, L], dtype=np.int32)
+    # PSSM mixing coefficient per position [B, L]
+    pssm_coef_all: np.ndarray = np.zeros([B, L], dtype=np.float32)
+    # PSSM per-position amino-acid bias [B, L, num_amino_acid_types]
+    pssm_bias_all: np.ndarray = np.zeros([B, L, num_amino_acid_types], dtype=np.float32)
+    # PSSM log-odds [B, L, num_amino_acid_types];
+    # a large positive default leaves positions unconstrained
+    pssm_log_odds_all: np.ndarray = 10000.0 * np.ones([B, L, num_amino_acid_types], dtype=np.float32)
+    # Residue-level design mask, shape [B, L].
     # Unlike chain_level_design_mask (one value per chain), this varies at residue granularity:
     # 1.0 for a position the user leaves free to be redesigned, 
     # 0.0 for a position the user pins via the fixed-residue specification.
     # Residues of visible chains are 1.0 here, but they are never sampled because
     # chain_level_design_mask is 0.0 along those chains. The model samples only where
     # chain_level_design_mask * position_level_design_mask * mask == 1.
-    position_level_design_mask: np.ndarray = np.zeros([num_pdb_structures, max_sequence_length], dtype=np.int32)
-    # Per-position amino-acid bias added to the model logits
-    bias_by_res_all: np.ndarray = np.zeros([num_pdb_structures, max_sequence_length, num_amino_acid_types], dtype=np.float32)
-    # Integer chain id per position (1 for the first chain, 2 for the second, ...)
-    chain_encoding_all: np.ndarray = np.zeros([num_pdb_structures, max_sequence_length], dtype=np.int32)
-    # Amino-acid sequence encoded as integer residue-type indices, shape
-    # [num_pdb_structures, max_sequence_length]. "Integer" means a 0-based index
+    position_level_design_mask: np.ndarray = np.zeros([B, L], dtype=np.int32)
+    # Per-position amino-acid bias added to the model logits [B, L, num_amino_acid_types]
+    bias_by_res_all: np.ndarray = np.zeros([B, L, num_amino_acid_types], dtype=np.float32)
+    # Integer chain id per position [B, L] (1 for the first chain, 2 for the second, ...)
+    chain_encoding_all: np.ndarray = np.zeros([B, L], dtype=np.int32)
+    # Amino-acid sequence encoded as integer residue-type indices, shape [B, L].
+    # "Integer" means a 0-based index
     # into the alphabet PROTEIN_ALPHABET ('ACDEFGHIKLMNPQRSTVWYX'): each element is
     # the alphabet position of that residue's one-letter code, e.g. A -> 0, C -> 1
     # and X -> 20 (raw '-' gap characters were converted to X earlier). Slots
     # beyond an entry's real length stay 0 and are ignored via ``mask``.
-    residue_type_indices: np.ndarray = np.zeros([num_pdb_structures, max_sequence_length], dtype=np.int32)
-    # Per-position mask of amino-acid types to omit during sampling
-    omit_AA_mask: np.ndarray = np.zeros([num_pdb_structures, max_sequence_length, num_amino_acid_types], dtype=np.int32)
-    # Per-entry list of all chain letters in processing order
+    residue_type_indices: np.ndarray = np.zeros([B, L], dtype=np.int32)
+    # Per-position mask of amino-acid types to omit during sampling [B, L, num_amino_acid_types]
+    omit_AA_mask: np.ndarray = np.zeros([B, L, num_amino_acid_types], dtype=np.int32)
+    # Per-entry list of all chain letters in processing order; ragged Python list
+    # of length B, each inner list holding that entry's chain letters
     all_chain_letters_per_entry: list[list[str]] = []
-    # Per-entry list of visible (fixed context) chain letters
+    # Per-entry list of visible (fixed context) chain letters; ragged, length B
     visible_chain_letters_per_entry: list[list[str]] = []
-    # Per-entry list of masked (designed) chain letters
+    # Per-entry list of masked (designed) chain letters; ragged, length B
     masked_chain_letters_per_entry: list[list[str]] = []
-    # Per-entry list of masked-chain lengths
+    # Per-entry list of masked-chain lengths; ragged, length B, inner lists of
+    # Python ints (one per masked chain of that entry)
     masked_chain_lengths_per_entry: list[list[int]] = []
-    # Per-entry tied-position groups (absolute 0-based residue indices)
+    # Per-entry tied-position groups; ragged, length B, inner lists holding the
+    # absolute 0-based residue indices of one tied group
     tied_position_groups_per_entry: list[list[list[int]]] = []
-    # Per-position tied weighting, shape [num_pdb_structures, max_sequence_length]
+    # Per-position tied weighting, shape [B, L]
     # (1.0 = uniform weight). Kept batch-shaped so heterogeneous entries can carry
     # their own tied weights
-    tied_position_weight: np.ndarray = np.ones([num_pdb_structures, max_sequence_length], dtype=np.float32)
+    tied_position_weight: np.ndarray = np.ones([B, L], dtype=np.float32)
     # Featurize each entry
     for i, pdb_dict in enumerate(pdb_dict_list):
         # Resolve which chains are masked (designed) vs visible (fixed context)
@@ -689,15 +781,17 @@ def tied_featurize(
         # Sort chain letters for deterministic ordering
         masked_chain_letters.sort()
         visible_chain_letters.sort()
-        # Processing order: masked chains first, then visible chains
+        # Processing order: masked chains first, then visible chains; ragged
+        # Python list with one letter per chain of this entry
         all_chain_letters: list[str] = masked_chain_letters + visible_chain_letters
-        # Per-chain backbone coordinate arrays for this entry
+        # Per-chain backbone coordinates for this entry; one array of shape
+        # [C, 4, 3] per chain ([C, 1, 3] in ca_only mode)
         chain_backbone_coordinates_list: list[np.ndarray] = []
-        # Per-chain design masks for this entry
+        # Per-chain chain-level design masks; one array of shape [C] per chain
         chain_mask_list: list[np.ndarray] = []
-        # Per-chain one-letter sequences for this entry
+        # Per-chain one-letter sequences for this entry; one string of length C per chain
         chain_seq_list: list[str] = []
-        # Per-chain integer chain-encoding arrays for this entry
+        # Per-chain integer chain-encoding arrays; one array of shape [C] per chain
         chain_encoding_list: list[np.ndarray] = []
         # 1-based running chain encoding number (not the PDB chain letter),
         # incremented after each chain is packed
@@ -707,19 +801,22 @@ def tied_featurize(
         # num_chains + 1, so the last element also marks the exclusive end of the
         # final chain (equal to the entry's total residue count)
         global_chain_start_offsets: list[int] = [0]
-        # Length of each masked chain
+        # Length of each masked chain; Python ints, one per masked chain
         masked_chain_lengths: list[int] = []
-        # Per-chain design masks (1.0 where the user leaves a residue free, 0.0 where the user fixed it)
+        # Per-chain design masks (1.0 where the user leaves a residue free, 0.0
+        # where the user fixed it); one array of shape [C] per chain
         design_position_mask_list: list[np.ndarray] = []
-        # Per-chain omitted-amino-acid masks
+        # Per-chain omitted-amino-acid masks; one array of shape
+        # [C, num_amino_acid_types] per chain
         omit_AA_mask_list: list[np.ndarray] = []
-        # Per-chain PSSM coefficients
+        # Per-chain PSSM coefficients; one array of shape [C] per chain
         pssm_coef_list: list[np.ndarray] = []
-        # Per-chain PSSM biases
+        # Per-chain PSSM biases; one array of shape [C, num_amino_acid_types] per chain
         pssm_bias_list: list[np.ndarray] = []
-        # Per-chain PSSM log-odds
+        # Per-chain PSSM log-odds; one array of shape [C, num_amino_acid_types] per chain
         pssm_log_odds_list: list[np.ndarray] = []
-        # Per-chain per-residue bias arrays
+        # Per-chain per-residue bias arrays; one array of shape
+        # [C, num_amino_acid_types] per chain
         bias_by_res_list: list[np.ndarray] = []
         # Start offset of the current chain in the concatenated layout (inclusive)
         current_chain_start: int = 0
@@ -749,16 +846,16 @@ def tied_featurize(
                 #     'O_chain_A':  [[-11.1, 7.0, -0.8], [-12.2, 5.3, -3.0]],
                 # }
                 chain_coords: dict[str, Any] = pdb_dict[f'coords_chain_{letter}']
-                # Visible chains are not predicted: design mask is all zeros
+                # Visible chains are not predicted: design mask is all zeros, shape [C]
                 chain_mask: np.ndarray = np.zeros(chain_length) #0.0 for visible chains
                 if ca_only:
-                    # Keep only CA coordinates [chain_length, 1, 3]
+                    # Keep only CA coordinates, shape [C, 1, 3]
                     chain_backbone_coordinates: np.ndarray = np.array(chain_coords[f'CA_chain_{letter}'])
                     # Add the missing atom axis when the array is 2-D
                     if len(chain_backbone_coordinates.shape) == 2:
                         chain_backbone_coordinates = chain_backbone_coordinates[:, None, :]
                 else:
-                    # Stack N, CA, C, O coordinates into [chain_length, 4, 3]
+                    # Stack N, CA, C, O coordinates into [C, 4, 3]
                     chain_backbone_coordinates: np.ndarray = np.stack([np.array(chain_coords[f'{atom}_chain_{letter}']) for atom in ['N', 'CA', 'C', 'O']], axis=1) 
                 # Collect the per-chain arrays
                 chain_backbone_coordinates_list.append(chain_backbone_coordinates)
@@ -778,19 +875,20 @@ def tied_featurize(
                 # This mask only records user-fixed positions (1.0 = free, 0.0 = pinned) and
                 # says nothing about chain-level designability: visible chains are kept out of
                 # sampling by chain_level_design_mask = 0.0, not by this mask.
-                design_position_mask: np.ndarray = np.ones(chain_length)
+                design_position_mask: np.ndarray = np.ones(chain_length)  # [C]
                 design_position_mask_list.append(design_position_mask)
-                # Visible chains have no omitted amino acids: mask stays all zeros
+                # Visible chains have no omitted amino acids: mask stays all zeros,
+                # shape [C, num_amino_acid_types]
                 omit_AA_mask_temp: np.ndarray = np.zeros([chain_length, num_amino_acid_types], np.int32)
                 omit_AA_mask_list.append(omit_AA_mask_temp)
                 # Neutral PSSM defaults for visible chains
-                pssm_coef: np.ndarray = np.zeros(chain_length)
-                pssm_bias: np.ndarray = np.zeros([chain_length, num_amino_acid_types])
-                pssm_log_odds: np.ndarray = 10000.0 * np.ones([chain_length, num_amino_acid_types])
+                pssm_coef: np.ndarray = np.zeros(chain_length)  # [C]
+                pssm_bias: np.ndarray = np.zeros([chain_length, num_amino_acid_types])  # [C, num_amino_acid_types]
+                pssm_log_odds: np.ndarray = 10000.0 * np.ones([chain_length, num_amino_acid_types])  # [C, num_amino_acid_types]
                 pssm_coef_list.append(pssm_coef)
                 pssm_bias_list.append(pssm_bias)
                 pssm_log_odds_list.append(pssm_log_odds)
-                # No per-residue bias for visible chains
+                # No per-residue bias for visible chains: [C, num_amino_acid_types] zeros
                 bias_by_res_list.append(np.zeros([chain_length, num_amino_acid_types]))
             # Masked chains are the design targets
             if letter in masked_chain_letters:
@@ -808,16 +906,16 @@ def tied_featurize(
                 # '{atom}_chain_{letter}' for atom in {N, CA, C, O}, each value a plain
                 # Python list of shape [chain_length, 3] with one [x, y, z] per residue
                 chain_coords: dict[str, Any] = pdb_dict[f'coords_chain_{letter}']
-                # Masked chains are predicted: design mask is all ones
+                # Masked chains are predicted: design mask is all ones, shape [C]
                 chain_mask = np.ones(chain_length) #1.0 for masked
                 if ca_only:
-                    # Keep only CA coordinates [chain_length, 1, 3]
+                    # Keep only CA coordinates, shape [C, 1, 3]
                     chain_backbone_coordinates = np.array(chain_coords[f'CA_chain_{letter}'])
                     # Add the missing atom axis when the array is 2-D
                     if len(chain_backbone_coordinates.shape) == 2:
                         chain_backbone_coordinates = chain_backbone_coordinates[:, None, :]
                 else:
-                    # Stack N, CA, C, O coordinates into [chain_length, 4, 3]
+                    # Stack N, CA, C, O coordinates into [C, 4, 3]
                     chain_backbone_coordinates = np.stack([np.array(chain_coords[f'{atom}_chain_{letter}']) for atom in ['N', 'CA', 'C', 'O']], axis=1) 
                 # Collect the per-chain arrays
                 chain_backbone_coordinates_list.append(chain_backbone_coordinates)
@@ -833,17 +931,17 @@ def tied_featurize(
                 current_chain_start += chain_length
                 # Move on to the next chain id
                 chain_encoding_number += 1
-                # Start with every position free to be designed
+                # Start with every position free to be designed, shape [C]
                 design_position_mask = np.ones(chain_length)
                 # Apply user-specified fixed positions when provided
                 if fixed_position_dict is not None:
-                    # 1-based positions to keep fixed on this chain
+                    # 1-based positions to keep fixed on this chain; Python list
                     fixed_pos_list: list[int] = fixed_position_dict[pdb_dict['name']][letter]
                     if fixed_pos_list:
                         # Mark fixed positions as 0.0 (converting to 0-based indices)
                         design_position_mask[np.array(fixed_pos_list)-1] = 0.0
                 design_position_mask_list.append(design_position_mask)
-                # Start with no omitted amino acids
+                # Start with no omitted amino acids, shape [C, num_amino_acid_types]
                 omit_AA_mask_temp = np.zeros([chain_length, num_amino_acid_types], np.int32)
                 # Apply user-specified amino-acid omissions when provided
                 if omit_AA_dict is not None:
@@ -860,14 +958,16 @@ def tied_featurize(
                     # }
                     for item in omit_AA_dict[pdb_dict['name']][letter]:
                         # for example, item is [[1, 3, 5], ['A', 'W']]
+                        # 0-based residue positions, Python list
                         idx_AA: list[int] = [position - 1 for position in item[0]]
+                        # alphabet indices of the omitted amino acids, Python list
                         AA_idx: list[int] = [alphabet.index(AA) for AA in item[1]]
                         omit_AA_mask_temp[np.ix_(idx_AA, AA_idx)] = 1
                 omit_AA_mask_list.append(omit_AA_mask_temp)
                 # Neutral PSSM defaults for this chain
-                pssm_coef = np.zeros(chain_length)
-                pssm_bias = np.zeros([chain_length, num_amino_acid_types])
-                pssm_log_odds = 10000.0 * np.ones([chain_length, num_amino_acid_types])
+                pssm_coef = np.zeros(chain_length)  # [C]
+                pssm_bias = np.zeros([chain_length, num_amino_acid_types])  # [C, num_amino_acid_types]
+                pssm_log_odds = 10000.0 * np.ones([chain_length, num_amino_acid_types])  # [C, num_amino_acid_types]
                 # Override with the user-supplied PSSM when available
                 if pssm_dict:
                     if pssm_dict[pdb_dict['name']][letter]:
@@ -890,10 +990,11 @@ def tied_featurize(
         #                                {'A': [5], 'B': [5]}]
         # gives [[0, 1, 2, 10, 11, 12], [4, 14]]; positions in the same inner
         # list are decoded as one step and share the exact same sampled residue
+        # Ragged Python list: one inner list of absolute 0-based indices per tied group
         tied_position_groups: list[list[int]] = []
         # Convert tied positions from per-chain 1-based to global 0-based indices
         if tied_positions_dict is not None:
-            # Tied-position groups for this structure
+            # Tied-position groups for this structure; Python list of group dicts
             tied_pos_list: list[dict[str, Any]] = tied_positions_dict[pdb_dict['name']]
             if tied_pos_list:
                 # tied_pos_list for entry '1abc': a list of tied groups, each
@@ -909,13 +1010,15 @@ def tied_featurize(
 
                 # Process each tied group independently
                 for tied_item in tied_pos_list:
-                    # Absolute indices of the tied positions in this group
+                    # Absolute 0-based indices of the tied positions in this group;
+                    # Python list, order follows the group's chain iteration
                     tied_position_group: list[int] = []
                     # Each entry maps a chain letter to its tied residue positions
                     for chain_letter, v in tied_item.items():
-                        # Offset of this chain in the concatenated layout
+                        # Start offset of this chain in the concatenated layout; scalar int
                         start_offset: int = global_chain_start_offsets[all_chain_letters.index(chain_letter)]
-                        # v holds [positions, weights] when per-position weights are given
+                        # v holds [positions, weights] when per-position weights are given,
+                        # i.e. two parallel Python lists of equal length
                         if isinstance(v[0], list):
                             # Convert each weighted position and record its weight
                             for position, weight in zip(v[0], v[1]):
@@ -931,67 +1034,71 @@ def tied_featurize(
                     tied_position_groups.append(tied_position_group)
         tied_position_groups_per_entry.append(tied_position_groups)
 
-        # Concatenate per-chain coordinates into [L, 4, 3]
-        all_chain_backbone_coordinates: np.ndarray = np.concatenate(chain_backbone_coordinates_list, 0) #[L, 4, 3]
-        # Concatenated sequence of all chains in processing order
+        # Coordinates of all chains of this entry concatenated along the residue
+        # axis: shape [L_entry, 4, 3] ([L_entry, 1, 3] in ca_only mode), where
+        # L_entry = entry_sequence_length (the entry's unpadded total length)
+        all_chain_backbone_coordinates: np.ndarray = np.concatenate(chain_backbone_coordinates_list, 0) #[L_entry, 4, 3]
+        # Concatenated sequence of all chains in processing order; string of length L_entry
         all_chain_sequence: str = "".join(chain_seq_list)
-        # Concatenated design mask [L]; 1.0 for positions that need to be predicted
-        all_chain_mask: np.ndarray = np.concatenate(chain_mask_list, 0) #[L,], 1.0 for places that need to be predicted
-        # Concatenated integer chain ids [L]
+        # Concatenated chain-level design mask [L_entry]; 1.0 for positions that need to be predicted
+        all_chain_mask: np.ndarray = np.concatenate(chain_mask_list, 0) #[L_entry], 1.0 for places that need to be predicted
+        # Concatenated integer chain ids [L_entry]
         all_chain_encoding: np.ndarray = np.concatenate(chain_encoding_list, 0)
-        # Concatenated design mask [L]; 1.0 for free (designable) positions, 0.0 for user-fixed positions
-        all_chain_design_position_mask: np.ndarray = np.concatenate(design_position_mask_list, 0) #[L,], 1.0 for places that need to be predicted
+        # Concatenated per-position design mask [L_entry]; 1.0 for free (designable) positions, 0.0 for user-fixed positions
+        all_chain_design_position_mask: np.ndarray = np.concatenate(design_position_mask_list, 0) #[L_entry], 1.0 for places that need to be predicted
 
-        # Concatenated PSSM coefficient [L]
+        # Concatenated PSSM coefficient [L_entry]
         pssm_coef_: np.ndarray = np.concatenate(pssm_coef_list, 0) 
-        # Concatenated PSSM bias [L, num_amino_acid_types]
+        # Concatenated PSSM bias [L_entry, num_amino_acid_types]
         pssm_bias_: np.ndarray = np.concatenate(pssm_bias_list, 0)
-        # Concatenated PSSM log-odds [L, num_amino_acid_types]
+        # Concatenated PSSM log-odds [L_entry, num_amino_acid_types]
         pssm_log_odds_: np.ndarray = np.concatenate(pssm_log_odds_list, 0) 
 
-        # Concatenated per-residue bias [L, num_amino_acid_types]; 0.0 where no tweaking is needed
-        bias_by_res_: np.ndarray = np.concatenate(bias_by_res_list, 0)  #[L,num_amino_acid_types], 0.0 for places where AA frequencies don't need to be tweaked
+        # Concatenated per-residue bias [L_entry, num_amino_acid_types]; 0.0 where no tweaking is needed
+        bias_by_res_: np.ndarray = np.concatenate(bias_by_res_list, 0)
 
         # Total (unpadded) length of this entry
         entry_sequence_length: int = len(all_chain_sequence)
-        # Pad coordinates up to max_sequence_length with NaN to mark missing padding rows
-        padded_backbone_coordinates: np.ndarray = np.pad(all_chain_backbone_coordinates, [[0, max_sequence_length-entry_sequence_length], [0, 0], [0, 0]], 'constant', constant_values=(np.nan, ))
+        # Pad coordinates up to L with NaN to mark missing padding
+        # rows; from [L_entry, 4, 3] ([L_entry, 1, 3]) to [L, 4, 3] ([L, 1, 3])
+        padded_backbone_coordinates: np.ndarray = np.pad(all_chain_backbone_coordinates, [[0, L-entry_sequence_length], [0, 0], [0, 0]], 'constant', constant_values=(np.nan, ))
         # Store the padded coordinates in the pdb_dict_list array
         backbone_atom_coordinates[i, :, :, :] = padded_backbone_coordinates
 
-        # Pad the chain-level design switch with zeros (1.0 for designed chains)
-        padded_all_chain_mask: np.ndarray = np.pad(all_chain_mask, [[0, max_sequence_length-entry_sequence_length]], 'constant', constant_values=(0.0, ))
-        # Pad the residue-level design mask with zeros (1.0 for user-free positions)
-        padded_all_chain_design_position_mask: np.ndarray = np.pad(all_chain_design_position_mask, [[0, max_sequence_length-entry_sequence_length]], 'constant', constant_values=(0.0, ))
-        # Pad the omitted-amino-acid mask with zeros along the residue axis only;
+        # Pad the chain-level design switch with zeros (1.0 for designed chains): [L_entry] -> [L]
+        padded_all_chain_mask: np.ndarray = np.pad(all_chain_mask, [[0, L-entry_sequence_length]], 'constant', constant_values=(0.0, ))
+        # Pad the residue-level design mask with zeros (1.0 for user-free positions): [L_entry] -> [L]
+        padded_all_chain_design_position_mask: np.ndarray = np.pad(all_chain_design_position_mask, [[0, L-entry_sequence_length]], 'constant', constant_values=(0.0, ))
+        # Pad the omitted-amino-acid mask with zeros along the residue axis only,
+        # i.e. [L_entry, num_amino_acid_types] -> [L, num_amino_acid_types];
         # the second axis (amino-acid types) must keep its size, otherwise a
         # single-element pad spec would be broadcast to every axis
-        padded_omit_AA_mask: np.ndarray = np.pad(np.concatenate(omit_AA_mask_list, 0), [[0, max_sequence_length-entry_sequence_length], [0, 0]], 'constant', constant_values=(0.0, ))
+        padded_omit_AA_mask: np.ndarray = np.pad(np.concatenate(omit_AA_mask_list, 0), [[0, L-entry_sequence_length], [0, 0]], 'constant', constant_values=(0.0, ))
         # Store the padded masks in the pdb_dict_list arrays
         chain_level_design_mask[i, :] = padded_all_chain_mask
         position_level_design_mask[i, :] = padded_all_chain_design_position_mask
         omit_AA_mask[i, :, :] = padded_omit_AA_mask
 
-        # Pad the chain-id array with zeros
-        padded_all_chain_encoding: np.ndarray = np.pad(all_chain_encoding, [[0, max_sequence_length-entry_sequence_length]], 'constant', constant_values=(0.0, ))
+        # Pad the chain-id array with zeros: [L_entry] -> [L]
+        padded_all_chain_encoding: np.ndarray = np.pad(all_chain_encoding, [[0, L-entry_sequence_length]], 'constant', constant_values=(0.0, ))
         chain_encoding_all[i, :] = padded_all_chain_encoding
 
         # Pad the PSSM arrays with zeros
-        pssm_coef_pad: np.ndarray = np.pad(pssm_coef_, [[0, max_sequence_length-entry_sequence_length]], 'constant', constant_values=(0.0, ))
-        pssm_bias_pad: np.ndarray = np.pad(pssm_bias_, [[0, max_sequence_length-entry_sequence_length], [0, 0]], 'constant', constant_values=(0.0, ))
-        pssm_log_odds_pad: np.ndarray = np.pad(pssm_log_odds_, [[0, max_sequence_length-entry_sequence_length], [0, 0]], 'constant', constant_values=(0.0, ))
+        pssm_coef_pad: np.ndarray = np.pad(pssm_coef_, [[0, L-entry_sequence_length]], 'constant', constant_values=(0.0, ))  # [L]
+        pssm_bias_pad: np.ndarray = np.pad(pssm_bias_, [[0, L-entry_sequence_length], [0, 0]], 'constant', constant_values=(0.0, ))  # [L, num_amino_acid_types]
+        pssm_log_odds_pad: np.ndarray = np.pad(pssm_log_odds_, [[0, L-entry_sequence_length], [0, 0]], 'constant', constant_values=(0.0, ))  # [L, num_amino_acid_types]
 
         # Store the padded PSSM arrays in the pdb_dict_list arrays
         pssm_coef_all[i, :] = pssm_coef_pad
         pssm_bias_all[i, :] = pssm_bias_pad
         pssm_log_odds_all[i, :] = pssm_log_odds_pad
 
-        # Pad the per-residue bias with zeros
-        bias_by_res_pad: np.ndarray = np.pad(bias_by_res_, [[0, max_sequence_length-entry_sequence_length], [0, 0]], 'constant', constant_values=(0.0, ))
+        # Pad the per-residue bias with zeros: [L_entry, num_amino_acid_types] -> [L, num_amino_acid_types]
+        bias_by_res_pad: np.ndarray = np.pad(bias_by_res_, [[0, L-entry_sequence_length], [0, 0]], 'constant', constant_values=(0.0, ))
         bias_by_res_all[i, :] = bias_by_res_pad
 
         # Convert to labels
-        # Integer-encode the concatenated sequence using the alphabet
+        # Integer-encode the concatenated sequence using the alphabet; [L_entry]
         indices: np.ndarray = np.asarray([alphabet.index(a) for a in all_chain_sequence], dtype=np.int32)
         # Store the encoded sequence in the pdb_dict_list array
         residue_type_indices[i, :entry_sequence_length] = indices
@@ -1001,9 +1108,10 @@ def tied_featurize(
         masked_chain_letters_per_entry.append(list(masked_chain_letters))
         masked_chain_lengths_per_entry.append(masked_chain_lengths)
 
-    # Boolean array of padding (NaN) coordinate entries
+    # Boolean array of padding (NaN) coordinate entries, shape [B, L, 4, 3]
+    # ([B, L, 1, 3] in ca_only mode)
     isnan: np.ndarray = np.isnan(backbone_atom_coordinates)
-    # Per-residue validity mask, shape [num_pdb_structures, max_sequence_length] (= [B, L]);
+    # Per-residue validity mask, shape [B, L];
     # 1.0 when all of a residue's backbone atom coordinates are finite, 0.0 for padded
     # positions and residues with missing (NaN) coordinates
     valid_residue_mask: np.ndarray = np.isfinite(np.sum(backbone_atom_coordinates, (2, 3))).astype(np.float32)
@@ -1012,13 +1120,14 @@ def tied_featurize(
 
     # Conversion
     # Move the PSSM arrays to torch tensors on the target device
-    pssm_coef_all = torch.from_numpy(pssm_coef_all).to(dtype=torch.float32, device=device)
-    pssm_bias_all = torch.from_numpy(pssm_bias_all).to(dtype=torch.float32, device=device)
-    pssm_log_odds_all = torch.from_numpy(pssm_log_odds_all).to(dtype=torch.float32, device=device)
+    pssm_coef_all = torch.from_numpy(pssm_coef_all).to(dtype=torch.float32, device=device)  # [B, L]
+    pssm_bias_all = torch.from_numpy(pssm_bias_all).to(dtype=torch.float32, device=device)  # [B, L, num_amino_acid_types]
+    pssm_log_odds_all = torch.from_numpy(pssm_log_odds_all).to(dtype=torch.float32, device=device)  # [B, L, num_amino_acid_types]
 
-    # Move the tied weighting to a torch tensor
+    # Move the tied weighting to a torch tensor [B, L]
     tied_position_weight = torch.from_numpy(tied_position_weight).to(dtype=torch.float32, device=device)
 
+    # Per-residue amino-acid bias [B, L, num_amino_acid_types]
     bias_by_res_all = torch.from_numpy(bias_by_res_all).to(dtype=torch.float32, device=device)
 
     # 1.0 where consecutive residues belong to the same chain (numbering step 1).
@@ -1027,30 +1136,31 @@ def tied_featurize(
     # by far more (or negative) and padding is -100, so they yield 0.0.
     # Shape [B, L-1]: one flag per adjacent pair along the L axis, float32 0.0/1.0
     jumps: np.ndarray = ((residue_idx[:, 1:] - residue_idx[:, :-1]) == 1).astype(np.float32)
-    # Phi angle uses the previous residue: mask shifted right by one
+    # Phi angle uses the previous residue: mask shifted right by one, shape [B, L]
     phi_mask: np.ndarray = np.pad(jumps, [[0, 0], [1, 0]])
-    # Psi angle uses the next residue: mask shifted left by one
+    # Psi angle uses the next residue: mask shifted left by one, shape [B, L]
     psi_mask: np.ndarray = np.pad(jumps, [[0, 0], [0, 1]])
-    # Omega angle uses the next residue: mask shifted left by one
+    # Omega angle uses the next residue: mask shifted left by one, shape [B, L]
     omega_mask: np.ndarray = np.pad(jumps, [[0, 0], [0, 1]])
     # Stack the three dihedral masks into [B, L, 3]
     dihedral_mask: np.ndarray = np.stack([phi_mask, psi_mask, omega_mask], axis=-1)
     
-    # Move all remaining arrays to torch tensors on the target device
-    dihedral_mask = torch.from_numpy(dihedral_mask).to(dtype=torch.float32, device=device)
-    residue_idx = torch.from_numpy(residue_idx).to(dtype=torch.long, device=device)
-    residue_type_indices = torch.from_numpy(residue_type_indices).to(dtype=torch.long, device=device)
-    backbone_atom_coordinates = torch.from_numpy(backbone_atom_coordinates).to(dtype=torch.float32, device=device)
-    valid_residue_mask = torch.from_numpy(valid_residue_mask).to(dtype=torch.float32, device=device)
-    chain_level_design_mask = torch.from_numpy(chain_level_design_mask).to(dtype=torch.float32, device=device)
-    position_level_design_mask = torch.from_numpy(position_level_design_mask).to(dtype=torch.float32, device=device)
-    omit_AA_mask = torch.from_numpy(omit_AA_mask).to(dtype=torch.float32, device=device)
-    chain_encoding_all = torch.from_numpy(chain_encoding_all).to(dtype=torch.long, device=device)
+    # Move all remaining arrays to torch tensors on the target device; the shapes
+    # are unchanged by the conversion
+    dihedral_mask = torch.from_numpy(dihedral_mask).to(dtype=torch.float32, device=device)  # [B, L, 3]
+    residue_idx = torch.from_numpy(residue_idx).to(dtype=torch.long, device=device)  # [B, L]
+    residue_type_indices = torch.from_numpy(residue_type_indices).to(dtype=torch.long, device=device)  # [B, L]
+    backbone_atom_coordinates = torch.from_numpy(backbone_atom_coordinates).to(dtype=torch.float32, device=device)  # [B, L, 4, 3]
+    valid_residue_mask = torch.from_numpy(valid_residue_mask).to(dtype=torch.float32, device=device)  # [B, L]
+    chain_level_design_mask = torch.from_numpy(chain_level_design_mask).to(dtype=torch.float32, device=device)  # [B, L]
+    position_level_design_mask = torch.from_numpy(position_level_design_mask).to(dtype=torch.float32, device=device)  # [B, L]
+    omit_AA_mask = torch.from_numpy(omit_AA_mask).to(dtype=torch.float32, device=device)  # [B, L, num_amino_acid_types]
+    chain_encoding_all = torch.from_numpy(chain_encoding_all).to(dtype=torch.long, device=device)  # [B, L]
     # Drop the atom axis in CA-only mode
     if ca_only:
-        X_out: torch.Tensor = backbone_atom_coordinates[:, :, 0]
+        X_out: torch.Tensor = backbone_atom_coordinates[:, :, 0]  # [B, L, 3]
     else:
-        X_out = backbone_atom_coordinates
+        X_out = backbone_atom_coordinates  # [B, L, 4, 3]
     # Bundle the packed batch; keyword construction keeps the field-to-variable
     # mapping explicit instead of relying on the positional order below
     return TiedFeatures(
