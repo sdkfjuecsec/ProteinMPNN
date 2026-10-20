@@ -1086,16 +1086,18 @@ class StructureDatasetPDB():
     by alphabet validity and sequence length, storing only the valid subset
     in ``self.data``.
 
-    Args:
-        pdb_dict_list: list of parsed PDB entry dicts (output of ``parse_PDB``).
-        verbose: if True, print progress every 1000 entries.
-        truncate: if set, stop collecting once this many valid entries are gathered.
-        max_length: maximum allowed sequence length; longer entries are discarded.
-        alphabet: the one-letter amino-acid alphabet used for validation.
     '''
     def __init__(self, pdb_dict_list: list[dict[str, Any]], verbose: bool = True,
                  truncate: int | None = None, max_length: int = 100,
                  alphabet: str = PROTEIN_ALPHABET_WITH_GAP) -> None:
+        """
+        Args:
+            pdb_dict_list: list of parsed PDB entry dicts (output of ``parse_PDB``).
+            verbose: if True, print progress every 1000 entries.
+            truncate: if set, stop collecting once this many valid entries are gathered.
+            max_length: maximum allowed sequence length; longer entries are discarded.
+            alphabet: the one-letter amino-acid alphabet used for validation.
+        """
         # build a set of valid amino acid letters for fast membership testing
         alphabet_set: set[str] = set(alphabet)
         # track how many entries were discarded and for what reason
