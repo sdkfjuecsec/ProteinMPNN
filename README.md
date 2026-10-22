@@ -1,5 +1,13 @@
 # ProteinMPNN
 ![ProteinMPNN](https://docs.google.com/drawings/d/e/2PACX-1vTtnMBDOq8TpHIctUfGN8Vl32x5ISNcPKlxjcQJF2q70PlaH2uFlj2Ac4s3khnZqG1YxppdMr0iTyk-/pub?w=889&h=358)
+
+> **Personal study fork.** This repository is a copy of the upstream
+> [ProteinMPNN](https://github.com/dauparas/ProteinMPNN) and is used for self-study.
+> Changes are limited to documentation: extensive line-by-line comments, clearer
+> internal variable names, and keyword-argument call sites. The algorithm, model
+> weights and numerical results are untouched; the only behavioural fix is that
+> `tied_featurize` no longer sorts caller-supplied chain lists in place.
+
 Read [ProteinMPNN paper](https://www.biorxiv.org/content/10.1101/2022.06.03.494563v1).
 
 To run ProteinMPNN clone this github repo and install Python>=3.0, PyTorch, Numpy. 

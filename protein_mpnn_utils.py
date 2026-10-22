@@ -58,14 +58,17 @@ def _scores(
         log_probs (torch.Tensor): per-position log-softmax probabilities, shape =
             [..., L, num_amino_acid_types] with last dim = 21 (alphabet size), dtype
             float32. Must already be log-probabilities (see Notes).
-        mask (torch.Tensor): per-position weight, shape = [..., L], dtype float32.
+        mask (torch.Tensor): per-position mask, shape = [..., L], dtype float32.
             1.0 for positions included in the score (valid, designable residues);
             0.0 for padding or excluded positions.
 
     Returns:
         torch.Tensor: one score per leading index of ``integer_encoded_sequence``,
-            shape = [...], dtype float32, equal to
-            sum(loss * mask, dim=-1) / sum(mask, dim=-1).
+            shape = [...], dtype float32: the mean per-position negative log-likelihood
+            over masked positions, i.e.
+            sum(nll * mask, dim=-1) / sum(mask, dim=-1), where ``nll`` is the per-position
+            value from ``torch.nn.NLLLoss(reduction='none')``. Lower is better: a smaller
+            score means the model assigns a higher probability to the observed sequence.
 
     Shape:
         In this codebase the leading axis is the batch size B, so a typical call uses
