@@ -22,7 +22,7 @@ def main(args):
     my_dict = {}
     for json_str in json_list:
         result = json.loads(json_str)
-        all_chain_list = [item[-1:] for item in list(result) if item[:10]=='seq_chain_']
+        all_chain_list = [key.removeprefix('seq_chain_') for key in result if key.startswith('seq_chain_')]
         bias_by_res_dict = {}
         for chain in all_chain_list:
             chain_length = len(result[f'seq_chain_{chain}'])
