@@ -130,14 +130,14 @@ def _S_to_seq(integer_encoded_sequence: torch.Tensor, mask: torch.Tensor) -> str
     """
     # Single source of truth for the residue alphabet: positional index -> one-letter code
     alphabet: str = PROTEIN_ALPHABET
-    # Keep only the positions selected by the mask (value > 0), map each residue index to
-    # its one-letter code, and join the letters into the output string
+    # Keep only the positions selected by the mask (value > 0), map each residue-type index
+    # to its one-letter code, and join the letters into the output string
     seq: str = ''.join([
-        alphabet[residue_index]
-        for residue_index, position_weight in zip(
+        alphabet[residue_type_index]
+        for residue_type_index, position_mask in zip(
             integer_encoded_sequence.tolist(), mask.tolist()
         )
-        if position_weight > 0
+        if position_mask > 0
     ])
     # One-letter sequence of the selected residues
     return seq
