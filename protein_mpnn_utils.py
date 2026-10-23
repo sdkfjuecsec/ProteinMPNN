@@ -667,7 +667,7 @@ def tied_featurize(
           ``len(PROTEIN_ALPHABET)`` = 21 (20 standard residues + ``X``); it is
           the last-axis size of every per-amino-acid tensor below
 
-        1. ``X`` (torch.Tensor, float32, local variable ``X``): padded backbone atom coordinates
+        1. ``X`` (torch.Tensor, float32): padded backbone atom coordinates
            [B, L, 4, 3], where 4 = the N/CA/C/O atoms and 3 = the (x, y, z)
            components; in ``ca_only`` mode the atom axis is squeezed, giving
            [B, L, 3] (CA only)
@@ -703,17 +703,26 @@ def tied_featurize(
         7. ``all_chain_ids_per_entry`` (list[list[str]], plain Python list): chain
            IDs of every chain per structure. The outer list has one element
            per PDB structure (length B); the inner list holds that structure's
-           chain IDs in processing order (masked chains first, then visible
-           chains). It is ragged, so it has no fixed [B, L] shape
+           chain IDs in processing order: masked chains first, then visible
+           chains, with each bucket sorted ascending
+           (``masked_chain_ids.sort()`` / ``visible_chain_ids.sort()``), so the
+           order is deterministic. It is ragged, so it has no fixed [B, L] shape
         8. ``visible_chain_ids_per_entry`` (list[list[str]], plain Python list): visible
            (fixed context) chain IDs per structure, one inner list per PDB
-           structure
+           structure, sorted ascending
         9. ``masked_chain_ids_per_entry`` (list[list[str]], plain Python list): masked
            (designed) chain IDs per structure, one inner list per PDB
-           structure
+           structure, sorted ascending
         10. ``masked_chain_lengths_per_entry`` (list[list[int]], plain Python
-            list): residue length of each masked chain, one inner list per PDB
-            structure
+            list): residue count of each masked chain, one inner list per PDB
+            structure. The inner lists are aligned element by element with
+            ``masked_chain_ids_per_entry``: ``masked_chain_lengths_per_entry[i][k]``
+            is the residue count of the chain named by
+            ``masked_chain_ids_per_entry[i][k]``, because both are built by
+            iterating the same sorted ``masked_chain_ids``; e.g. for entry 0
+                print(features.masked_chain_ids_per_entry[0])      # ['A', 'C']
+                print(features.masked_chain_lengths_per_entry[0])  # [10, 7]
+            means chain A has 10 residues and chain C has 7
         11. ``chain_M_pos`` (torch.Tensor, float32, local variable
             ``free_residue_mask``): per-position free-to-design mask
             [B, L]. Binary 0.0/1.0: 0.0 for a position the user fixed via
@@ -723,7 +732,9 @@ def tied_featurize(
             multiplied by ``chain_M`` (see item 5)
         12. ``omit_AA_mask`` (torch.Tensor, float32): omitted amino-acid mask
             [B, L, num_amino_acid_types]; 1.0 marks an amino acid type that may not be placed at
-            that position
+            that position. Sampling multiplies the predicted probabilities by
+            ``1 - omit_AA_mask`` and renormalizes before drawing, so omitted
+            types get exactly 0 probability and are never sampled
         13. ``residue_idx`` (torch.Tensor, int64): per-residue numbering [B, L].
             Each chain gets a disjoint band of width 100: for the chain with
             1-based id ``chain_encoding_number`` (the same value stored in
@@ -734,10 +745,34 @@ def tied_featurize(
             so a difference of exactly 1 means two residues are adjacent within
             the same chain
         14. ``dihedral_mask`` (torch.Tensor, float32): phi/psi/omega validity
-            mask [B, L, 3]
+            mask [B, L, 3]. Column 0 is phi, column 1 psi, column 2 omega; 1.0
+            means the neighbouring residue needed by that dihedral exists in the
+            same chain, 0.0 means it does not (chain boundary or padding). For an
+            entry whose first two chains have 3 and 2 residues:
+                print(features.dihedral_mask[0, :5].tolist())
+                [[0.0, 1.0, 1.0],   # chain 1 residue 0: phi has no predecessor
+                 [1.0, 1.0, 1.0],
+                 [1.0, 0.0, 0.0],   # chain 1 residue 2: psi and omega have no successor
+                 [0.0, 1.0, 1.0],   # chain 2 residue 0: phi does not cross the chain boundary
+                 [1.0, 0.0, 0.0]]   # chain 2 residue 1: last residue of that chain
+            It is derived from ``residue_idx`` (item 13): the internal array
+            ``jumps`` is 1.0 where ``residue_idx`` increases by exactly 1, which
+            the 100-wide chain bands make equivalent to "same chain and adjacent
+            residue"; a chain boundary jumps by 101 and padding is -100, so both
+            give 0.0. The mask only tracks adjacency. 
         15. ``tied_position_groups_per_entry`` (list[list[list[int]]], plain
             Python list): tied-position groups per entry; the innermost list
-            holds the absolute 0-based residue indices tied together
+            holds the absolute 0-based global residue indices tied together, i.e. the
+            global index in the entry's concatenated chain layout (chain-local
+            1-based positions are converted by adding the chain's start offset
+            and subtracting 1). For a homodimer whose chains A and B both have
+            10 residues, with every position tied:
+                print(features.tied_position_groups_per_entry)
+                [
+                    [[0, 10], [1, 11], [2, 12], ...],  # entry 0: 10 groups, A1+B1 ... A10+B10
+                ]
+            An entry without tied positions prints as [], so the outer list has
+            shape [B]
         16. ``pssm_coef_all`` (torch.Tensor, float32): PSSM mixing coefficient
             [B, L]
         17. ``pssm_bias_all`` (torch.Tensor, float32): PSSM per-position bias
@@ -753,16 +788,12 @@ def tied_featurize(
     #   B = number of PDB structures packed into one batch (batch axis); this is
     #       unrelated to the chain ID 'B' mentioned in the examples above
     #   L = maximum total sequence length across the batch (padded residue axis)
-    #   C = chain_length (residues of a single chain)
+    #   C = chain_length (residue count of a single chain)
     #   num_amino_acid_types = len(alphabet) = 21 (amino-acid axis)
-    # The coordinate tensor is called X, matching the returned field name and the
-    # model-side convention; this X has nothing to do with the unknown-residue code
-    # 'X' or the chain-ID placeholder ``coords_chain_X`` used in the docstring
+
     # Amino-acid alphabet used to convert one-letter codes into integer labels
     alphabet: str = PROTEIN_ALPHABET
     # Number of amino-acid classes: 20 standard residues plus the unknown code X.
-    # Derived from the alphabet so that every last-axis dimension tracks the
-    # single source of truth instead of hard-coding the value 21.
     num_amino_acid_types: int = len(alphabet)
     # Number of PDB structures packed into the output tensors (batch axis)
     B: int = len(pdb_dict_list)
@@ -770,7 +801,6 @@ def tied_featurize(
     sequence_lengths: np.ndarray = np.array([len(pdb_dict['seq']) for pdb_dict in pdb_dict_list], dtype=np.int32)
     # Longest sequence across the packed structures; all tensors are padded to it
     L: int = max([len(pdb_dict['seq']) for pdb_dict in pdb_dict_list])
-    # Allocate the coordinate tensor with one row per residue
     if ca_only:
         # CA-only layout [B, L, 1, 3]
         X: np.ndarray = np.zeros([B, L, 1, 3])
@@ -798,7 +828,7 @@ def tied_featurize(
     # 0.0 for a position the user pins via the fixed-residue specification.
     # Residues of visible chains are 1.0 here, but they are never sampled because
     # chain_design_mask is 0.0 along those chains. The model samples only where
-    # chain_design_mask * free_residue_mask * mask == 1.
+    # chain_design_mask * free_residue_mask * valid_residue_mask == 1.
     free_residue_mask: np.ndarray = np.zeros([B, L], dtype=np.int32)
     # Per-position amino-acid bias added to the model logits [B, L, num_amino_acid_types]
     bias_by_res_all: np.ndarray = np.zeros([B, L, num_amino_acid_types], dtype=np.float32)
@@ -813,18 +843,42 @@ def tied_featurize(
     residue_type_indices: np.ndarray = np.zeros([B, L], dtype=np.int32)
     # Per-position mask of amino-acid types to omit during sampling [B, L, num_amino_acid_types]
     omit_AA_mask: np.ndarray = np.zeros([B, L, num_amino_acid_types], dtype=np.int32)
-    # Per-entry list of all chain IDs in processing order; ragged Python list
-    # of length B, each inner list holding that entry's chain IDs
+    
+    # ------------------------------------------------------------------
+    # Per-entry chain ID bookkeeping. The four lists below are ragged Python
+    # lists of length B (one element per PDB structure), filled inside the
+    # entry loop, so they are not padded and have no fixed inner width.
+    # ------------------------------------------------------------------
+    # Chain IDs of every chain of each structure, in processing order: masked
+    # (designed) chains first, then visible (fixed context) chains, with each
+    # bucket sorted ascending, i.e. it is always the exact concatenation
+    #   all_chain_ids_per_entry[i] = masked_chain_ids_per_entry[i] + visible_chain_ids_per_entry[i]
+    # (same as the local ``all_chain_ids`` used inside the entry loop). This is
+    # the order used to concatenate chains along the residue axis, e.g. for 1X2I
+    # with both chains designed
+    #     print(all_chain_ids_per_entry)  # [['A', 'B']]
     all_chain_ids_per_entry: list[list[str]] = []
-    # Per-entry list of visible (fixed context) chain IDs; ragged, length B
+    # Visible (fixed context) chain IDs of each structure, sorted ascending; an
+    # empty inner list means the structure has no fixed chain, e.g. for 1X2I
+    # used as a homodimer with nothing fixed
+    #     print(visible_chain_ids_per_entry)  # [[]]
+    # and for a design of chain A only, with chain B kept as context
+    #     print(visible_chain_ids_per_entry)  # [['B']]
     visible_chain_ids_per_entry: list[list[str]] = []
-    # Per-entry list of masked (designed) chain IDs; ragged, length B
+    # Masked (designed) chain IDs of each structure, sorted ascending, e.g. for
+    # 1X2I with both chains designed
+    #     print(masked_chain_ids_per_entry)  # [['A', 'B']]
     masked_chain_ids_per_entry: list[list[str]] = []
-    # Per-entry list of masked-chain lengths; ragged, length B, inner lists of
-    # Python ints (one per masked chain of that entry)
+    # Residue count of each masked chain. The inner
+    # lists are aligned element by element with masked_chain_ids_per_entry:
+    # masked_chain_lengths_per_entry[i][k] is the residue count of the chain
+    # named by masked_chain_ids_per_entry[i][k], e.g. for 1X2I (68 residues per
+    # chain, both chains designed)
+    #     print(masked_chain_lengths_per_entry)  # [[68, 68]]
     masked_chain_lengths_per_entry: list[list[int]] = []
+
     # Per-entry tied-position groups; ragged, length B, inner lists holding the
-    # absolute 0-based residue indices of one tied group.
+    # absolute 0-based global residue indices of one tied group.
     # Example, for a batch of a homodimer (chains A and B, 10 residues each) and
     # a homotrimer (chains C, D and E, 20 residues each):
     #   print(features.tied_position_groups_per_entry)
@@ -868,8 +922,10 @@ def tied_featurize(
         # Sort chain IDs for deterministic ordering
         masked_chain_ids.sort()
         visible_chain_ids.sort()
-        # Processing order: masked chains first, then visible chains; ragged
-        # Python list with one ID per chain of this entry
+        # Processing order for this entry: masked chains first, then visible
+        # chains. For every PDB structure, all chain-wise concatenations along
+        # the residue axis follow exactly this order. The per-entry metadata stored 
+        # in the returned TiedFeatures uses the same order
         all_chain_ids: list[str] = masked_chain_ids + visible_chain_ids
         # Per-chain backbone coordinates for this entry; one array of shape
         # [C, 4, 3] per chain ([C, 1, 3] in ca_only mode)
