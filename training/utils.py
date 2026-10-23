@@ -7,10 +7,11 @@ import time
 import random
 import os
 import sys
+import string
 
 # add project root to sys.path so we can import the shared constants module
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from constants import PROTEIN_ALPHABET
+from constants import NUMERIC_CHAIN_ID_COUNT, PROTEIN_ALPHABET
 
 class StructureDataset():
     def __init__(self, pdb_dict_list, verbose=True, truncate=None, max_length=100,
@@ -136,8 +137,8 @@ def get_std_opt(parameters, d_model, step):
 
 
 def get_pdbs(data_loader, repeat=1, max_length=10000, num_units=1000000):
-    alphabetic_chain_ids = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z']
-    numeric_chain_ids = [str(item) for item in list(np.arange(300))]
+    alphabetic_chain_ids = list(string.ascii_uppercase + string.ascii_lowercase)
+    numeric_chain_ids = [str(item) for item in range(NUMERIC_CHAIN_ID_COUNT)]
     candidate_chain_ids = alphabetic_chain_ids + numeric_chain_ids
     c = 0
     c1 = 0

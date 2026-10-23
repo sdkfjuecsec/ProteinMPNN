@@ -1,5 +1,5 @@
 from __future__ import print_function
-import json, time, os, sys, glob
+import json, time, os, sys, glob, string
 import shutil
 import numpy as np
 import torch
@@ -17,7 +17,7 @@ import itertools
 
 # add project root to sys.path so we can import the shared constants module
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from constants import PROTEIN_ALPHABET
+from constants import NUMERIC_CHAIN_ID_COUNT, PROTEIN_ALPHABET
 
 
 def featurize(batch, device):
@@ -31,8 +31,8 @@ def featurize(batch, device):
     mask_self = np.ones([B, L_max, L_max], dtype=np.int32) #for interface loss calculation - 0.0 for self interaction, 1.0 for other
     chain_encoding_all = np.zeros([B, L_max], dtype=np.int32) #integer encoding for chains 0, 0, 0,...0, 1, 1,..., 1, 2, 2, 2...
     S = np.zeros([B, L_max], dtype=np.int32) #sequence AAs integers
-    alphabetic_chain_ids = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z']
-    numeric_chain_ids = [str(item) for item in list(np.arange(300))]
+    alphabetic_chain_ids = list(string.ascii_uppercase + string.ascii_lowercase)
+    numeric_chain_ids = [str(item) for item in range(NUMERIC_CHAIN_ID_COUNT)]
     chain_ids = alphabetic_chain_ids + numeric_chain_ids
     for i, b in enumerate(batch):
         masked_chains = b['masked_list']

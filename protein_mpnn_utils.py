@@ -13,8 +13,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 import random
 import itertools
+from collections.abc import Sequence
 from typing import Any, NamedTuple
-from constants import PROTEIN_ALPHABET, PROTEIN_ALPHABET_WITH_GAP
+from constants import (
+    FULL_BACKBONE_ATOM_NAMES,
+    NUMERIC_CHAIN_ID_COUNT,
+    PROTEIN_ALPHABET,
+    PROTEIN_ALPHABET_WITH_GAP,
+)
 
 #A number of functions/classes are adopted from: https://github.com/jingraham/neurips19-graph-protein-design
 
@@ -144,7 +150,7 @@ def _S_to_seq(integer_encoded_sequence: torch.Tensor, mask: torch.Tensor) -> str
 
 def parse_PDB_biounits(
     pdb_path: str,
-    atom_names: list[str] = ['N', 'CA', 'C', 'O'],
+    atom_names: Sequence[str] = FULL_BACKBONE_ATOM_NAMES,
     chain: str | None = None,
 ) -> tuple[np.ndarray, str] | tuple[None, None]:
     '''
@@ -152,8 +158,8 @@ def parse_PDB_biounits(
 
     Args:
         pdb_path: path to the PDB file (text format).
-        atom_names: list of atom names to extract, in output order.
-                        Default ['N','CA','C','O'] (full protein backbone, required by the model).
+        atom_names: atom names to extract, in output order.
+                        Default FULL_BACKBONE_ATOM_NAMES, i.e. ['N','CA','C','O'] (full protein backbone, required by the model).
         chain: single chain ID to extract (e.g. 'A'). If None, atoms from ALL chains are returned.
 
     Returns:
@@ -354,8 +360,8 @@ def parse_PDB(
     pdb_dict_list: list[dict[str, Any]] = []
     # candidate chain IDs: uppercase A-Z followed by lowercase a-z (52 single characters)
     alphabetic_chain_ids: list[str] = list(string.ascii_uppercase + string.ascii_lowercase)
-    # second layer: numbers 0..299 for large complexes that use numeric chain IDs
-    numeric_chain_ids: list[str] = [str(item) for item in list(np.arange(300))]
+    # second layer: numeric chain IDs '0'..'299' for complexes that use numeric labels
+    numeric_chain_ids: list[str] = [str(item) for item in range(NUMERIC_CHAIN_ID_COUNT)]
     # combined candidate list (352 entries); each ID is probed to see if the chain exists
     candidate_chain_ids: list[str] = alphabetic_chain_ids + numeric_chain_ids
      
@@ -364,38 +370,31 @@ def parse_PDB(
         candidate_chain_ids = input_chain_list  
  
     # list of files to parse (single file here; loop structure supports multi-biological-unit files)
-    biounit_names = [path_to_pdb]
+    biounit_names: list[str] = [path_to_pdb]
     for biounit in biounit_names:
         # dict holding all parsed info for the current PDB file
-        my_dict = {}
+        pdb_dict: dict[str, Any] = {}
         # number of chains successfully parsed from this file
-        s = 0
+        num_parsed_chains: int = 0
         # concatenated sequence string from all chains in the file
-        concat_seq = ''
-        # the following five lists are unused (dead code), kept from the original version
-        concat_N = []
-        concat_CA = []
-        concat_C = []
-        concat_O = []
-        concat_mask = []
-        coords_dict = {}
-        # iterate over candidate chain names and try to extract coordinates for each
+        concat_seq: str = ''
+        # iterate over candidate chain IDs and try to extract coordinates for each
         for chain_id in candidate_chain_ids:
             # choose which atom types to extract based on the ca_only flag
             if ca_only:
-                sidechain_atoms = ['CA']
+                backbone_atom_names: Sequence[str] = ['CA']
             else:
-                sidechain_atoms = ['N', 'CA', 'C', 'O']
+                backbone_atom_names = FULL_BACKBONE_ATOM_NAMES
             # call the low-level parser: filter the PDB text by chain and atom names
             # returns coords_array: shape (n_residues, n_atoms, 3) coordinate array; seq: amino-acid sequence string
             # if the chain does not exist, returns (None, None)
-            coords_array, seq = parse_PDB_biounits(biounit, atom_names=sidechain_atoms, chain=chain_id)
+            coords_array, seq = parse_PDB_biounits(biounit, atom_names=backbone_atom_names, chain=chain_id)
             # only write to the dict when coords_array is not None, i.e. the chain actually exists
             if coords_array is not None:
                 # append this chain's sequence to the concatenated full sequence
                 concat_seq += seq
                 # store this chain's sequence under a key like 'seq_chain_A'
-                my_dict[f'seq_chain_{chain_id}'] = seq
+                pdb_dict[f'seq_chain_{chain_id}'] = seq
                 # initialize the coordinate sub-dict for this chain
                 coords_dict_chain = {}
                 # coarse-grained mode: store only C-alpha coordinates, shape (n_res, 3)
@@ -408,22 +407,23 @@ def parse_PDB(
                     coords_dict_chain[f'C_chain_{chain_id}'] = coords_array[:, 2, :].tolist()
                     coords_dict_chain[f'O_chain_{chain_id}'] = coords_array[:, 3, :].tolist()
                 # attach this chain's coordinate sub-dict to the main dict under 'coords_chain_A' etc.
-                my_dict[f'coords_chain_{chain_id}']=coords_dict_chain
+                pdb_dict[f'coords_chain_{chain_id}']=coords_dict_chain
                 # increment the parsed-chain counter
-                s += 1
+                num_parsed_chains += 1
         # strip the directory prefix using the platform's own path rules: os.path.basename
         # handles both separator styles on Windows and the POSIX separator on Linux
         pdb_file_name = os.path.basename(biounit)
         # remove the ".pdb" extension to get the structure name
-        my_dict['name'] = os.path.splitext(pdb_file_name)[0]
+        pdb_dict['name'] = os.path.splitext(pdb_file_name)[0]
         # record the total number of chains found in this file
-        my_dict['num_of_chains'] = s
+        pdb_dict['num_of_chains'] = num_parsed_chains
         # store the concatenated sequence of all chains
-        my_dict['seq'] = concat_seq
-        # this condition is always true (s never exceeds the candidate count); effectively a no-op filter
-        if s <= len(candidate_chain_ids):
+        pdb_dict['seq'] = concat_seq
+        # this condition is always true (num_parsed_chains never exceeds the candidate
+        # count), so it is effectively a no-op filter
+        if num_parsed_chains <= len(candidate_chain_ids):
             # add this file's parsed dict to the return list
-            pdb_dict_list.append(my_dict)
+            pdb_dict_list.append(pdb_dict)
             # increment the structure counter reported at the end of the function
             c+=1
     # report how many structures were parsed (c is otherwise unused)
@@ -926,7 +926,7 @@ def tied_featurize(
                         chain_backbone_coordinates = chain_backbone_coordinates[:, None, :]
                 else:
                     # Stack N, CA, C, O coordinates into [C, 4, 3]
-                    chain_backbone_coordinates: np.ndarray = np.stack([np.array(chain_coords[f'{atom}_chain_{chain_id}']) for atom in ['N', 'CA', 'C', 'O']], axis=1) 
+                    chain_backbone_coordinates: np.ndarray = np.stack([np.array(chain_coords[f'{atom}_chain_{chain_id}']) for atom in FULL_BACKBONE_ATOM_NAMES], axis=1) 
                 # Collect the per-chain arrays
                 chain_backbone_coordinates_list.append(chain_backbone_coordinates)
                 chain_mask_list.append(chain_mask)
@@ -986,7 +986,7 @@ def tied_featurize(
                         chain_backbone_coordinates = chain_backbone_coordinates[:, None, :]
                 else:
                     # Stack N, CA, C, O coordinates into [C, 4, 3]
-                    chain_backbone_coordinates = np.stack([np.array(chain_coords[f'{atom}_chain_{chain_id}']) for atom in ['N', 'CA', 'C', 'O']], axis=1) 
+                    chain_backbone_coordinates = np.stack([np.array(chain_coords[f'{atom}_chain_{chain_id}']) for atom in FULL_BACKBONE_ATOM_NAMES], axis=1) 
                 # Collect the per-chain arrays
                 chain_backbone_coordinates_list.append(chain_backbone_coordinates)
                 chain_mask_list.append(chain_mask)
