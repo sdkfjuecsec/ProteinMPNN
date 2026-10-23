@@ -118,7 +118,7 @@ def main(args):
                 pdb_dict[f'seq_chain_{chain_id}'] = seq[0]
                 coords_dict_chain = {}
                 if ca_only:
-                    coords_dict_chain[f'CA_chain_{chain_id}'] = xyz.tolist()
+                    coords_dict_chain[f'CA_chain_{chain_id}'] = xyz[:, 0, :].tolist()
                 else:
                     coords_dict_chain[f'N_chain_{chain_id}'] = xyz[:, 0, :].tolist()
                     coords_dict_chain[f'CA_chain_{chain_id}'] = xyz[:, 1, :].tolist()

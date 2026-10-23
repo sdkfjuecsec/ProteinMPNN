@@ -150,20 +150,20 @@ def _S_to_seq(integer_encoded_sequence: torch.Tensor, mask: torch.Tensor) -> str
 
 def parse_PDB_biounits(
     pdb_path: str,
-    atom_names: Sequence[str] = FULL_BACKBONE_ATOM_NAMES,
-    chain: str | None = None,
+    backbone_atom_names: Sequence[str] = FULL_BACKBONE_ATOM_NAMES,
+    chain_id: str | None = None,
 ) -> tuple[np.ndarray, str] | tuple[None, None]:
     '''
     Parse one chain from a PDB file and extract atom coordinates plus the sequence.
 
     Args:
         pdb_path: path to the PDB file (text format).
-        atom_names: atom names to extract, in output order.
+        backbone_atom_names: atom names to extract, in output order.
                         Default FULL_BACKBONE_ATOM_NAMES, i.e. ['N','CA','C','O'] (full protein backbone, required by the model).
-        chain: single chain ID to extract (e.g. 'A'). If None, atoms from ALL chains are returned.
+        chain_id: single chain ID to extract (e.g. 'A'). If None, atoms from ALL chains are returned.
 
     Returns:
-        coords_array: numpy array of shape (n_residues, len(atom_names), 3), 0-based residue indexing.
+        coords_array: numpy array of shape (n_residues, len(backbone_atom_names), 3), 0-based residue indexing.
                     Residues/atoms missing from the file are filled with NaN.
         seq: the amino-acid sequence in one-letter codes,
                     with '-' for missing/unknown residues.
@@ -190,10 +190,30 @@ def parse_PDB_biounits(
     }
 
     # inverse mapping: 3-letter residue name -> 1-letter code (e.g. 'ALA'->'A', 'GAP'->'-')
-    three_to_one_letter = {three: one for one, three in amino_acid_one_to_three.items()}
+    amino_acid_three_to_one: dict[str, str] = {three: one for one, three in amino_acid_one_to_three.items()}
 
-    # atom_coords_dict/residue_names_dict hold per-residue data; min/max track the residue-number range seen so far
-    atom_coords_dict, residue_names_dict, min_residue_number, max_residue_number = {}, {}, 1e6, -1e6
+    # residue_number -> insertion_code -> atom_name -> xyz; 0-based residue numbering, e.g.
+    #   {
+    #       0: {
+    #           '': {
+    #               'N': np.array([33.142, 21.390, 56.357]),    # shape (3,)
+    #               'CA': np.array([33.003, 22.335, 57.475]),   # shape (3,)
+    #               ...
+    #           },
+    #       },
+    #   }
+    atom_coords_dict: dict[int, dict[str, dict[str, np.ndarray]]] = {}
+
+    # residue_number -> insertion_code -> 3-letter residue name, e.g.
+    #   {
+    #       0: {'': 'PRO'},   # residue 0, no insertion code
+    #   }
+    residue_names_dict: dict[int, dict[str, str]] = {}
+
+    # lowest/highest residue numbers seen; sentinels make the first min/max take effect
+    min_residue_number: int = 10**6
+    max_residue_number: int = -(10**6)
+    
     # read the PDB file line by line in binary mode
     with open(pdb_path, "rb") as pdb_file:
         for line in pdb_file:
@@ -212,7 +232,7 @@ def parse_PDB_biounits(
                 # chain ID occupies column 22 (0-based index 21)
                 ch = line[21:22]
                 # process the line only if it belongs to the requested chain (or no chain filter is set)
-                if ch == chain or chain is None:
+                if ch == chain_id or chain_id is None:
                     # atom name occupies columns 13-16, stripped of padding spaces
                     atom_name = line[12:12+4].strip()
                     # residue name (3 letters) occupies columns 18-20
@@ -242,7 +262,7 @@ def parse_PDB_biounits(
                     # mirror structure for the sequence dict
                     if residue_number not in residue_names_dict:
                         residue_names_dict[residue_number] = {}
-                    # record the residue's 3-letter name once per (residue, insertion code) pair
+                    # record the residue's 3-letter name once per (residue number, insertion code) pair
                     if insertion_code not in residue_names_dict[residue_number]:
                         residue_names_dict[residue_number][insertion_code] = residue_name
 
@@ -251,39 +271,49 @@ def parse_PDB_biounits(
                         # store the atom_name's (x, y, z) as a small numpy array
                         atom_coords_dict[residue_number][insertion_code][atom_name] = np.array([x, y, z])
 
-    # build the output: collect 1-letter sequence chars and flat atom coordinates
-    sequence_chars, flat_atom_coordinates = [], []
-    try:
-        # walk every residue number from lowest to highest (gaps get filled below)
-        for residue_number in range(min_residue_number, max_residue_number+1):
-            # residue present: convert 3-letter name directly to 1-letter code
-            if residue_number in residue_names_dict:
-                for insertion_code in sorted(residue_names_dict[residue_number]):
-                    three_letter = residue_names_dict[residue_number][insertion_code]
-                    sequence_chars.append(three_to_one_letter.get(three_letter, '-'))
-            # residue number missing entirely: use '-' for gap
-            else:
-                sequence_chars.append('-')
-            # residue has coordinates: emit them in the requested atom_name order
-            if residue_number in atom_coords_dict:
-                for insertion_code in sorted(atom_coords_dict[residue_number]):
-                    for atom_name in atom_names:
-                        # atom_name present: use its stored coordinates
-                        if atom_name in atom_coords_dict[residue_number][insertion_code]:
-                            flat_atom_coordinates.append(atom_coords_dict[residue_number][insertion_code][atom_name])
-                        # atom_name absent: fill with NaN so the output shape stays consistent
-                        else:
-                            flat_atom_coordinates.append(np.full(3, np.nan))
-            # residue missing from the coordinate data: fill all requested atom_names with NaN
-            else:
-                for atom_name in atom_names:
-                    flat_atom_coordinates.append(np.full(3, np.nan))
-        # reshape flat_atom_coordinates to (n_residues, n_atoms, 3); join chars into one sequence string
-        return np.array(flat_atom_coordinates).reshape(-1, len(atom_names), 3), "".join(sequence_chars)
-    # TypeError occurs when no ATOM records matched (min/max stay at float sentinels, so range() fails)
-    except TypeError:
+    # no ATOM record matched the requested chain: the sentinels are never updated,
+    # so min_residue_number stays above max_residue_number
+    if min_residue_number > max_residue_number:
         # signal "chain not found" to the caller
         return None, None
+
+    # build the output: collect one-letter amino acids and flat atom coordinates
+    # one character per residue, e.g. ['H', 'M', 'P', 'E', ...] -> 'HMPE...'
+    one_letter_amino_acids: list[str] = []
+    # xyz arrays in (residue, backbone_atom_names) order, flattened so that
+    # reshape(-1, len(backbone_atom_names), 3) rebuilds [n_residues, n_atoms, 3], e.g.
+    #   [np.array([33.142, 21.390, 56.357]),   # residue 0, 'N'
+    #    np.array([33.003, 22.335, 57.475]),   # residue 0, 'CA'
+    #    np.array([32.424, 21.668, 58.723]),   # residue 0, 'C'
+    #    np.array([31.745, 20.640, 58.632]),   # residue 0, 'O'
+    #    np.array([nan, nan, nan]), ...]       # missing atoms/residues are NaN-filled
+    flat_atom_coordinates: list[np.ndarray] = []
+    # walk every residue number from lowest to highest (gaps get filled below)
+    for residue_number in range(min_residue_number, max_residue_number+1):
+        # residue present: convert 3-letter name directly to 1-letter code
+        if residue_number in residue_names_dict:
+            for insertion_code in sorted(residue_names_dict[residue_number]):
+                three_letter = residue_names_dict[residue_number][insertion_code]
+                one_letter_amino_acids.append(amino_acid_three_to_one.get(three_letter, '-'))
+        # residue number missing entirely: use '-' for gap
+        else:
+            one_letter_amino_acids.append('-')
+        # residue has coordinates: emit them in the requested atom_name order
+        if residue_number in atom_coords_dict:
+            for insertion_code in sorted(atom_coords_dict[residue_number]):
+                for atom_name in backbone_atom_names:
+                    # atom_name present: use its stored coordinates
+                    if atom_name in atom_coords_dict[residue_number][insertion_code]:
+                        flat_atom_coordinates.append(atom_coords_dict[residue_number][insertion_code][atom_name])
+                    # atom_name absent: fill with NaN so the output shape stays consistent
+                    else:
+                        flat_atom_coordinates.append(np.full(shape=3, fill_value=np.nan))
+        # residue missing from the coordinate data: fill all requested backbone_atom_names with NaN
+        else:
+            for atom_name in backbone_atom_names:
+                flat_atom_coordinates.append(np.full(shape=3, fill_value=np.nan))
+    # reshape flat_atom_coordinates to (n_residues, n_atoms, 3); join chars into one sequence string
+    return np.array(flat_atom_coordinates).reshape(-1, len(backbone_atom_names), 3), "".join(one_letter_amino_acids)
 
 
 def parse_PDB(
@@ -302,7 +332,8 @@ def parse_PDB(
 
     Args:
         path_to_pdb: path to the PDB file (text format).
-        input_chain_list: chain IDs to parse, e.g. ``['A', 'B']``. When None (default),
+        input_chain_list: chain IDs to parse, e.g. ``['A', 'B']``. Duplicate IDs are
+            ignored. When None (default),
             every candidate name is probed exhaustively: ``A``-``Z``, ``a``-``z``, then the
             numeric names ``'0'``-``'299'``.
         ca_only: if True, store only the C-alpha atom per residue; otherwise the full
@@ -332,7 +363,7 @@ def parse_PDB(
                     },
                     'name': '6EHB',                                       # file name minus '.pdb'
                     'num_of_chains': 2,                                   # chains parsed from file
-                    'seq': 'DGINQSGD...AIGLRYDFDGINQSGD...AIGLRYDF',      # chains concatenated
+                    'seq': 'DGINQSGD...AIGLRYDFDGINQSGD...AIGLRYDF',      # display only, see Notes
                 },
             ]
 
@@ -346,6 +377,18 @@ def parse_PDB(
         ``os.path.basename`` so the separator convention of the running platform applies,
         e.g. ``'inputs/PDB_monomers/pdbs/5L33.pdb'`` -> ``'5L33'``.
 
+        ``'seq'`` is only a flattened concatenation of all ``'seq_chain_<ID>'`` values, kept
+        for display, logging, and length bookkeeping. It is never decoded position by
+        position: ``tied_featurize`` rebuilds the per-residue sequence tensor ``S`` by
+        walking the chains itself and reading ``pdb_dict['seq_chain_<ID>']`` (masked chains
+        first, then visible ones), applying its own gap-to-``X`` substitution on the way.
+        From ``'seq'`` the model only consumes its length, once, to derive each structure's
+        total residue count and the padded ``L`` axis. ``StructureDatasetPDB`` reads it the
+        same way, for alphabet validation, ``max_length`` filtering, and verbose printing.
+        A ``'seq'`` whose chain order merely mirrors the probe order therefore cannot
+        influence the design: it may differ from the internal chain layout without
+        consequence, as long as its length stays equal to the sum of the chain lengths.
+
     Examples:
         >>> parse_PDB('inputs/PDB_monomers/pdbs/5L33.pdb', input_chain_list=['A'], ca_only=True)
         [{'seq_chain_A': 'HMPEEEKAARLF...NGRIKRVTITHV',
@@ -354,8 +397,8 @@ def parse_PDB(
           'num_of_chains': 1,
           'seq': 'HMPEEEKAARLF...NGRIKRVTITHV'}]
     '''
-    # c: counter of successfully parsed structures, reported just before returning
-    c=0
+    # num_parsed_structures: counter of successfully parsed structures, reported just before returning
+    num_parsed_structures: int = 0
     # list that holds the parsed dict for each PDB file; this is the return value
     pdb_dict_list: list[dict[str, Any]] = []
     # candidate chain IDs: uppercase A-Z followed by lowercase a-z (52 single characters)
@@ -367,7 +410,8 @@ def parse_PDB(
      
     # if the user explicitly supplies chains, use only those (faster than exhaustive search)
     if input_chain_list:
-        candidate_chain_ids = input_chain_list  
+        # drop duplicate chain IDs (keeps the caller's order) and copy the list so callers are never mutated
+        candidate_chain_ids = list(dict.fromkeys(input_chain_list))
  
     # list of files to parse (single file here; loop structure supports multi-biological-unit files)
     biounit_names: list[str] = [path_to_pdb]
@@ -378,17 +422,20 @@ def parse_PDB(
         num_parsed_chains: int = 0
         # concatenated sequence string from all chains in the file
         concat_seq: str = ''
+        # choose which atom types to extract based on the ca_only flag (independent of the chain)
+        if ca_only:
+            backbone_atom_names: Sequence[str] = ('CA',)
+        else:
+            backbone_atom_names: Sequence[str] = FULL_BACKBONE_ATOM_NAMES
         # iterate over candidate chain IDs and try to extract coordinates for each
         for chain_id in candidate_chain_ids:
-            # choose which atom types to extract based on the ca_only flag
-            if ca_only:
-                backbone_atom_names: Sequence[str] = ['CA']
-            else:
-                backbone_atom_names = FULL_BACKBONE_ATOM_NAMES
-            # call the low-level parser: filter the PDB text by chain and atom names
+            # call the low-level parser: filter the PDB text by chain id and atom names
             # returns coords_array: shape (n_residues, n_atoms, 3) coordinate array; seq: amino-acid sequence string
             # if the chain does not exist, returns (None, None)
-            coords_array, seq = parse_PDB_biounits(biounit, atom_names=backbone_atom_names, chain=chain_id)
+            # both are None together when the chain is absent, otherwise (coords, sequence)
+            coords_array: np.ndarray | None
+            seq: str | None
+            coords_array, seq = parse_PDB_biounits(biounit, backbone_atom_names=backbone_atom_names, chain_id=chain_id)
             # only write to the dict when coords_array is not None, i.e. the chain actually exists
             if coords_array is not None:
                 # append this chain's sequence to the concatenated full sequence
@@ -396,18 +443,13 @@ def parse_PDB(
                 # store this chain's sequence under a key like 'seq_chain_A'
                 pdb_dict[f'seq_chain_{chain_id}'] = seq
                 # initialize the coordinate sub-dict for this chain
-                coords_dict_chain = {}
-                # coarse-grained mode: store only C-alpha coordinates, shape (n_res, 3)
-                if ca_only:
-                    coords_dict_chain[f'CA_chain_{chain_id}'] = coords_array.tolist()
-                # full backbone mode: store N / CA / C / O coordinates separately, each shape (n_res, 3)
-                else:
-                    coords_dict_chain[f'N_chain_{chain_id}'] = coords_array[:, 0, :].tolist()
-                    coords_dict_chain[f'CA_chain_{chain_id}'] = coords_array[:, 1, :].tolist()
-                    coords_dict_chain[f'C_chain_{chain_id}'] = coords_array[:, 2, :].tolist()
-                    coords_dict_chain[f'O_chain_{chain_id}'] = coords_array[:, 3, :].tolist()
+                coords_dict_chain: dict[str, list[list[float]]] = {}
+                # one key per extracted atom type, e.g. 'CA_chain_A' -> shape (n_res, 3)
+                # (with ca_only only 'CA_chain_A' is produced)
+                for atom_index, atom_name in enumerate(backbone_atom_names):
+                    coords_dict_chain[f'{atom_name}_chain_{chain_id}'] = coords_array[:, atom_index, :].tolist()
                 # attach this chain's coordinate sub-dict to the main dict under 'coords_chain_A' etc.
-                pdb_dict[f'coords_chain_{chain_id}']=coords_dict_chain
+                pdb_dict[f'coords_chain_{chain_id}'] = coords_dict_chain
                 # increment the parsed-chain counter
                 num_parsed_chains += 1
         # strip the directory prefix using the platform's own path rules: os.path.basename
@@ -419,15 +461,12 @@ def parse_PDB(
         pdb_dict['num_of_chains'] = num_parsed_chains
         # store the concatenated sequence of all chains
         pdb_dict['seq'] = concat_seq
-        # this condition is always true (num_parsed_chains never exceeds the candidate
-        # count), so it is effectively a no-op filter
-        if num_parsed_chains <= len(candidate_chain_ids):
-            # add this file's parsed dict to the return list
-            pdb_dict_list.append(pdb_dict)
-            # increment the structure counter reported at the end of the function
-            c+=1
-    # report how many structures were parsed (c is otherwise unused)
-    print(f'parse_PDB: parsed {c} structure(s) from {path_to_pdb}')
+        # add this file's parsed dict to the return list
+        pdb_dict_list.append(pdb_dict)
+        # increment the structure counter reported at the end of the function
+        num_parsed_structures += 1
+    # report how many structures were parsed (num_parsed_structures is otherwise unused)
+    print(f'parse_PDB: parsed {num_parsed_structures} structure(s) from {path_to_pdb}')
     # return the list of parsed dicts
     return pdb_dict_list
 
@@ -1395,15 +1434,18 @@ class StructureDatasetPDB():
     in ``self.data``.
 
     '''
-    def __init__(self, pdb_dict_list: list[dict[str, Any]], verbose: bool = True,
-                 truncate: int | None = None, max_length: int = 100,
+    def __init__(self, 
+                 pdb_dict_list: list[dict[str, Any]], 
+                 verbose: bool = True,
+                 truncate: int | None = None, 
+                 max_length: int = 10000,
                  alphabet: str = PROTEIN_ALPHABET_WITH_GAP) -> None:
         """
         Args:
             pdb_dict_list: list of parsed PDB entry dicts (output of ``parse_PDB``).
             verbose: if True, print progress every 1000 entries.
             truncate: if set, stop collecting once this many valid entries are gathered.
-            max_length: maximum allowed sequence length; longer entries are discarded.
+            max_length: maximum allowed total residue count; longer entries are discarded.
             alphabet: the one-letter amino-acid alphabet used for validation.
         """
         # build a set of valid amino acid letters for fast membership testing
