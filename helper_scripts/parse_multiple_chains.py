@@ -4,7 +4,14 @@ def main(args):
 
     import numpy as np
     import os, time, gzip, json
-    import glob 
+    import glob
+    import string
+    import sys
+
+    # Add the repository root to sys.path so this standalone script can reuse the shared
+    # constants without importing the torch-dependent protein_mpnn_utils module.
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from constants import FULL_BACKBONE_ATOM_NAMES, NUMERIC_CHAIN_ID_COUNT
     
     folder_with_pdbs_path = args.input_path
     save_path = args.output_path
@@ -15,17 +22,8 @@ def main(args):
     alpha_3 = ['ALA', 'ARG', 'ASN', 'ASP', 'CYS', 'GLN', 'GLU', 'GLY', 'HIS', 'ILE',
                'LEU', 'LYS', 'MET', 'PHE', 'PRO', 'SER', 'THR', 'TRP', 'TYR', 'VAL', 'GAP']
     
-    aa_1_N = {a: n for n, a in enumerate(alpha_1)}
     aa_3_N = {a: n for n, a in enumerate(alpha_3)}
     aa_N_1 = {n: a for n, a in enumerate(alpha_1)}
-    aa_1_3 = {a: b for a, b in zip(alpha_1, alpha_3)}
-    aa_3_1 = {b: a for a, b in zip(alpha_1, alpha_3)}
-    
-    def AA_to_N(x):
-      # ["ARND"] -> [[0,1,2,3]]
-      x = np.array(x);
-      if x.ndim == 0: x = x[None]
-      return [[aa_1_N.get(a, states-1) for a in y] for y in x]
     
     def N_to_AA(x):
       # [[0,1,2,3]] -> ["ARND"]
@@ -34,7 +32,7 @@ def main(args):
       return ["".join([aa_N_1.get(a, "-") for a in y]) for y in x]
     
     
-    def parse_PDB_biounits(x, atoms=['N', 'CA', 'C', 'O'], chain=None):
+    def parse_PDB_biounits(x, atoms=FULL_BACKBONE_ATOM_NAMES, chain=None):
       '''
       input:  x = PDB filename
               atoms = atoms to extract (optional)
@@ -82,8 +80,8 @@ def main(args):
       try:
           for resn in range(min_resn, max_resn+1):
             if resn in seq:
-              for k in sorted(seq[resn]): seq_.append(aa_3_N.get(seq[resn][k], 20))
-            else: seq_.append(20)
+              for k in sorted(seq[resn]): seq_.append(aa_3_N.get(seq[resn][k], states - 1))
+            else: seq_.append(states - 1)
             if resn in xyz:
               for k in sorted(xyz[resn]):
                 for atom in atoms:
@@ -98,53 +96,41 @@ def main(args):
     
     
     pdb_dict_list = []
-    c = 0
     
-    if folder_with_pdbs_path[-1]!='/':
-        folder_with_pdbs_path = folder_with_pdbs_path+'/'
-    
-    
-    alphabetic_chain_ids = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z']
-    numeric_chain_ids = [str(item) for item in list(np.arange(300))]
+    alphabetic_chain_ids = list(string.ascii_uppercase + string.ascii_lowercase)
+    numeric_chain_ids = [str(item) for item in range(NUMERIC_CHAIN_ID_COUNT)]
     candidate_chain_ids = alphabetic_chain_ids + numeric_chain_ids
     
-    biounit_names = glob.glob(folder_with_pdbs_path+'*.pdb')
+    biounit_names = glob.glob(os.path.join(folder_with_pdbs_path, '*.pdb'))
     for biounit in biounit_names:
-        my_dict = {}
-        s = 0
+        pdb_dict = {}
+        num_parsed_chains = 0
         concat_seq = ''
-        concat_N = []
-        concat_CA = []
-        concat_C = []
-        concat_O = []
-        concat_mask = []
-        coords_dict = {}
         for chain_id in candidate_chain_ids:
             if ca_only:
-                sidechain_atoms = ['CA']
+                backbone_atom_names = ('CA',)
             else:
-                sidechain_atoms = ['N', 'CA', 'C', 'O']
-            xyz, seq = parse_PDB_biounits(biounit, atoms=sidechain_atoms, chain=chain_id)
+                backbone_atom_names = FULL_BACKBONE_ATOM_NAMES
+            xyz, seq = parse_PDB_biounits(biounit, atoms=backbone_atom_names, chain=chain_id)
             if xyz is not None:
-                concat_seq += seq
-                my_dict[f'seq_chain_{chain_id}']=seq
+                # parse_PDB_biounits returns a one-element list of sequence strings
+                concat_seq += seq[0]
+                pdb_dict[f'seq_chain_{chain_id}'] = seq[0]
                 coords_dict_chain = {}
                 if ca_only:
-                    coords_dict_chain[f'CA_chain_{chain_id}']=xyz.tolist()
+                    coords_dict_chain[f'CA_chain_{chain_id}'] = xyz.tolist()
                 else:
                     coords_dict_chain[f'N_chain_{chain_id}'] = xyz[:, 0, :].tolist()
                     coords_dict_chain[f'CA_chain_{chain_id}'] = xyz[:, 1, :].tolist()
                     coords_dict_chain[f'C_chain_{chain_id}'] = xyz[:, 2, :].tolist()
                     coords_dict_chain[f'O_chain_{chain_id}'] = xyz[:, 3, :].tolist()
-                my_dict[f'coords_chain_{chain_id}']=coords_dict_chain
-                s += 1
-        fi = biounit.rfind("/")
-        my_dict['name']=biounit[(fi+1):-4]
-        my_dict['num_of_chains'] = s
-        my_dict['seq'] = concat_seq
-        if s < len(candidate_chain_ids):
-            pdb_dict_list.append(my_dict)
-            c+=1
+                pdb_dict[f'coords_chain_{chain_id}'] = coords_dict_chain
+                num_parsed_chains += 1
+        pdb_file_name = os.path.basename(biounit)
+        pdb_dict['name'] = os.path.splitext(pdb_file_name)[0]
+        pdb_dict['num_of_chains'] = num_parsed_chains
+        pdb_dict['seq'] = concat_seq
+        pdb_dict_list.append(pdb_dict)
             
             
     with open(save_path, 'w') as f:
