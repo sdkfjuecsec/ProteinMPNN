@@ -348,7 +348,7 @@ def parse_PDB(
           'num_of_chains': 1,
           'seq': 'HMPEEEKAARLF...NGRIKRVTITHV'}]
     '''
-    # c: counter of successfully parsed structures (unused, kept from original implementation)
+    # c: counter of successfully parsed structures, reported just before returning
     c=0
     # list that holds the parsed dict for each PDB file; this is the return value
     pdb_dict_list: list[dict[str, Any]] = []
@@ -424,8 +424,10 @@ def parse_PDB(
         if s <= len(candidate_chain_ids):
             # add this file's parsed dict to the return list
             pdb_dict_list.append(my_dict)
-            # increment the (unused) structure counter
+            # increment the structure counter reported at the end of the function
             c+=1
+    # report how many structures were parsed (c is otherwise unused)
+    print(f'parse_PDB: parsed {c} structure(s) from {path_to_pdb}')
     # return the list of parsed dicts
     return pdb_dict_list
 
