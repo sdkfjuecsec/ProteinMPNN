@@ -1428,9 +1428,9 @@ class StructureDatasetPDB():
     '''
     A lightweight in-memory dataset wrapping pre-parsed PDB entries.
 
-    Each entry is a dict produced by ``parse_PDB`` (keys include ``'seq'``,
+    Each entry is a PDB dict produced by ``parse_PDB`` (keys include ``'seq'``,
     ``'name'``, and ``'coords_chain_<ID>'``).  The constructor filters entries
-    by alphabet validity and sequence length, storing only the valid subset
+    by alphabet validity and sequence length, storing only the valid entry
     in ``self.data``.
 
     '''
