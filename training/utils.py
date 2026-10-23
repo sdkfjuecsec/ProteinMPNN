@@ -136,9 +136,9 @@ def get_std_opt(parameters, d_model, step):
 
 
 def get_pdbs(data_loader, repeat=1, max_length=10000, num_units=1000000):
-    init_alphabet = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z']
-    extra_alphabet = [str(item) for item in list(np.arange(300))]
-    chain_alphabet = init_alphabet + extra_alphabet
+    alphabetic_chain_ids = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z']
+    numeric_chain_ids = [str(item) for item in list(np.arange(300))]
+    candidate_chain_ids = alphabetic_chain_ids + numeric_chain_ids
     c = 0
     c1 = 0
     pdb_dict_list = []
@@ -161,7 +161,7 @@ def get_pdbs(data_loader, repeat=1, max_length=10000, num_units=1000000):
                 visible_list = []
                 if len(list(np.unique(t['idx']))) < 352:
                     for idx in list(np.unique(t['idx'])):
-                        letter = chain_alphabet[idx]
+                        chain_id = candidate_chain_ids[idx]
                         res = np.argwhere(t['idx']==idx)
                         initial_sequence= "".join(list(np.array(list(t['seq']))[res][0,]))
                         if initial_sequence[-6:] == "HHHHHH":
@@ -187,19 +187,19 @@ def get_pdbs(data_loader, repeat=1, max_length=10000, num_units=1000000):
                         if res.shape[1] < 4:
                             pass
                         else:
-                            my_dict['seq_chain_'+letter]= "".join(list(np.array(list(t['seq']))[res][0,]))
-                            concat_seq += my_dict['seq_chain_'+letter]
+                            my_dict[f'seq_chain_{chain_id}']= "".join(list(np.array(list(t['seq']))[res][0,]))
+                            concat_seq += my_dict[f'seq_chain_{chain_id}']
                             if idx in t['masked']:
-                                mask_list.append(letter)
+                                mask_list.append(chain_id)
                             else:
-                                visible_list.append(letter)
+                                visible_list.append(chain_id)
                             coords_dict_chain = {}
                             all_atoms = np.array(t['xyz'][res,])[0,] #[L, 14, 3]
-                            coords_dict_chain['N_chain_'+letter]=all_atoms[:, 0, :].tolist()
-                            coords_dict_chain['CA_chain_'+letter]=all_atoms[:, 1, :].tolist()
-                            coords_dict_chain['C_chain_'+letter]=all_atoms[:, 2, :].tolist()
-                            coords_dict_chain['O_chain_'+letter]=all_atoms[:, 3, :].tolist()
-                            my_dict['coords_chain_'+letter]=coords_dict_chain
+                            coords_dict_chain[f'N_chain_{chain_id}']=all_atoms[:, 0, :].tolist()
+                            coords_dict_chain[f'CA_chain_{chain_id}']=all_atoms[:, 1, :].tolist()
+                            coords_dict_chain[f'C_chain_{chain_id}']=all_atoms[:, 2, :].tolist()
+                            coords_dict_chain[f'O_chain_{chain_id}']=all_atoms[:, 3, :].tolist()
+                            my_dict[f'coords_chain_{chain_id}']=coords_dict_chain
                     my_dict['name']= t['label']
                     my_dict['masked_list']= mask_list
                     my_dict['visible_list']= visible_list

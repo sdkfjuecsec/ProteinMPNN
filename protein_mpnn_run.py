@@ -170,7 +170,7 @@ def main(args):
             designed_chain_list = [str(item) for item in args.pdb_path_chains.split()]
         else:
             designed_chain_list = all_chain_list
-        fixed_chain_list = [letter for letter in all_chain_list if letter not in designed_chain_list]
+        fixed_chain_list = [chain_id for chain_id in all_chain_list if chain_id not in designed_chain_list]
         chain_id_dict = {}
         chain_id_dict[pdb_dict_list[0]['name']]= (designed_chain_list, fixed_chain_list)
     else:
@@ -345,7 +345,7 @@ def main(args):
                             S_sample_list.append(S_sample.cpu().data.numpy())
                             for b_ix in range(BATCH_COPIES):
                                 masked_chain_lengths = features.masked_chain_lengths_per_entry[b_ix]
-                                masked_chain_letters = features.masked_chain_letters_per_entry[b_ix]
+                                masked_chain_ids = features.masked_chain_ids_per_entry[b_ix]
                                 seq_recovery_rate = torch.sum(torch.sum(torch.nn.functional.one_hot(features.S[b_ix], 21)*torch.nn.functional.one_hot(S_sample[b_ix], 21), axis=-1)*mask_for_loss[b_ix])/torch.sum(mask_for_loss[b_ix])
                                 seq = _S_to_seq(S_sample[b_ix], features.chain_M[b_ix])
                                 score = scores[b_ix]
@@ -361,16 +361,16 @@ def main(args):
                                         end += mask_l
                                         list_of_AAs.append(native_seq[start:end])
                                         start = end
-                                    native_seq = "".join(list(np.array(list_of_AAs)[np.argsort(masked_chain_letters)]))
+                                    native_seq = "".join(list(np.array(list_of_AAs)[np.argsort(masked_chain_ids)]))
                                     l0 = 0
-                                    for mc_length in list(np.array(masked_chain_lengths)[np.argsort(masked_chain_letters)])[:-1]:
+                                    for mc_length in list(np.array(masked_chain_lengths)[np.argsort(masked_chain_ids)])[:-1]:
                                         l0 += mc_length
                                         native_seq = native_seq[:l0] + '/' + native_seq[l0:]
                                         l0 += 1
-                                    sorted_masked_chain_letters = np.argsort(features.masked_chain_letters_per_entry[0])
-                                    print_masked_chains = [features.masked_chain_letters_per_entry[0][i] for i in sorted_masked_chain_letters]
-                                    sorted_visible_chain_letters = np.argsort(features.visible_chain_letters_per_entry[0])
-                                    print_visible_chains = [features.visible_chain_letters_per_entry[0][i] for i in sorted_visible_chain_letters]
+                                    sorted_masked_chain_ids = np.argsort(features.masked_chain_ids_per_entry[0])
+                                    print_masked_chains = [features.masked_chain_ids_per_entry[0][i] for i in sorted_masked_chain_ids]
+                                    sorted_visible_chain_ids = np.argsort(features.visible_chain_ids_per_entry[0])
+                                    print_visible_chains = [features.visible_chain_ids_per_entry[0][i] for i in sorted_visible_chain_ids]
                                     native_score_print = np.format_float_positional(np.float32(native_score.mean()), unique=False, precision=4)
                                     global_native_score_print = np.format_float_positional(np.float32(global_native_score.mean()), unique=False, precision=4)
                                     script_dir = os.path.dirname(os.path.realpath(__file__))
@@ -391,9 +391,9 @@ def main(args):
                                     list_of_AAs.append(seq[start:end])
                                     start = end
     
-                                seq = "".join(list(np.array(list_of_AAs)[np.argsort(masked_chain_letters)]))
+                                seq = "".join(list(np.array(list_of_AAs)[np.argsort(masked_chain_ids)]))
                                 l0 = 0
-                                for mc_length in list(np.array(masked_chain_lengths)[np.argsort(masked_chain_letters)])[:-1]:
+                                for mc_length in list(np.array(masked_chain_lengths)[np.argsort(masked_chain_ids)])[:-1]:
                                     l0 += mc_length
                                     seq = seq[:l0] + '/' + seq[l0:]
                                     l0 += 1
@@ -408,7 +408,7 @@ def main(args):
                     all_probs_concat = np.concatenate(all_probs_list)
                     all_log_probs_concat = np.concatenate(all_log_probs_list)
                     S_sample_concat = np.concatenate(S_sample_list)
-                    np.savez(probs_file, probs=np.array(all_probs_concat, np.float32), log_probs=np.array(all_log_probs_concat, np.float32), S=np.array(S_sample_concat, np.int32), mask=mask_for_loss.cpu().data.numpy(), chain_order=features.all_chain_letters_per_entry)
+                    np.savez(probs_file, probs=np.array(all_probs_concat, np.float32), log_probs=np.array(all_log_probs_concat, np.float32), S=np.array(S_sample_concat, np.int32), mask=mask_for_loss.cpu().data.numpy(), chain_order=features.all_chain_ids_per_entry)
                 t1 = time.time()
                 dt = round(float(t1-t0), 4)
                 num_seqs = len(temperatures)*NUM_BATCHES*BATCH_COPIES

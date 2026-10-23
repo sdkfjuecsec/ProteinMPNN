@@ -31,21 +31,21 @@ def featurize(batch, device):
     mask_self = np.ones([B, L_max, L_max], dtype=np.int32) #for interface loss calculation - 0.0 for self interaction, 1.0 for other
     chain_encoding_all = np.zeros([B, L_max], dtype=np.int32) #integer encoding for chains 0, 0, 0,...0, 1, 1,..., 1, 2, 2, 2...
     S = np.zeros([B, L_max], dtype=np.int32) #sequence AAs integers
-    init_alphabet = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z']
-    extra_alphabet = [str(item) for item in list(np.arange(300))]
-    chain_letters = init_alphabet + extra_alphabet
+    alphabetic_chain_ids = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z']
+    numeric_chain_ids = [str(item) for item in list(np.arange(300))]
+    chain_ids = alphabetic_chain_ids + numeric_chain_ids
     for i, b in enumerate(batch):
         masked_chains = b['masked_list']
         visible_chains = b['visible_list']
         all_chains = masked_chains + visible_chains
         visible_temp_dict = {}
         masked_temp_dict = {}
-        for step, letter in enumerate(all_chains):
-            chain_seq = b[f'seq_chain_{letter}']
-            if letter in visible_chains:
-                visible_temp_dict[letter] = chain_seq
-            elif letter in masked_chains:
-                masked_temp_dict[letter] = chain_seq
+        for step, chain_id in enumerate(all_chains):
+            chain_seq = b[f'seq_chain_{chain_id}']
+            if chain_id in visible_chains:
+                visible_temp_dict[chain_id] = chain_seq
+            elif chain_id in masked_chains:
+                masked_temp_dict[chain_id] = chain_seq
         for km, vm in masked_temp_dict.items():
             for kv, vv in visible_temp_dict.items():
                 if vm == vv:
@@ -64,13 +64,13 @@ def featurize(batch, device):
         c = 1
         l0 = 0
         l1 = 0
-        for step, letter in enumerate(all_chains):
-            if letter in visible_chains:
-                chain_seq = b[f'seq_chain_{letter}']
+        for step, chain_id in enumerate(all_chains):
+            if chain_id in visible_chains:
+                chain_seq = b[f'seq_chain_{chain_id}']
                 chain_length = len(chain_seq)
-                chain_coords = b[f'coords_chain_{letter}'] #this is a dictionary
+                chain_coords = b[f'coords_chain_{chain_id}'] #this is a dictionary
                 chain_mask = np.zeros(chain_length) #0.0 for visible chains
-                x_chain = np.stack([chain_coords[c] for c in [f'N_chain_{letter}', f'CA_chain_{letter}', f'C_chain_{letter}', f'O_chain_{letter}']], 1) #[chain_length,4,3]
+                x_chain = np.stack([chain_coords[c] for c in [f'N_chain_{chain_id}', f'CA_chain_{chain_id}', f'C_chain_{chain_id}', f'O_chain_{chain_id}']], 1) #[chain_length,4,3]
                 x_chain_list.append(x_chain)
                 chain_mask_list.append(chain_mask)
                 chain_seq_list.append(chain_seq)
@@ -80,12 +80,12 @@ def featurize(batch, device):
                 residue_idx[i, l0:l1] = 100*(c-1)+np.arange(l0, l1)
                 l0 += chain_length
                 c+=1
-            elif letter in masked_chains: 
-                chain_seq = b[f'seq_chain_{letter}']
+            elif chain_id in masked_chains: 
+                chain_seq = b[f'seq_chain_{chain_id}']
                 chain_length = len(chain_seq)
-                chain_coords = b[f'coords_chain_{letter}'] #this is a dictionary
+                chain_coords = b[f'coords_chain_{chain_id}'] #this is a dictionary
                 chain_mask = np.ones(chain_length) #0.0 for visible chains
-                x_chain = np.stack([chain_coords[c] for c in [f'N_chain_{letter}', f'CA_chain_{letter}', f'C_chain_{letter}', f'O_chain_{letter}']], 1) #[chain_lenght,4,3]
+                x_chain = np.stack([chain_coords[c] for c in [f'N_chain_{chain_id}', f'CA_chain_{chain_id}', f'C_chain_{chain_id}', f'O_chain_{chain_id}']], 1) #[chain_lenght,4,3]
                 x_chain_list.append(x_chain)
                 chain_mask_list.append(chain_mask)
                 chain_seq_list.append(chain_seq)

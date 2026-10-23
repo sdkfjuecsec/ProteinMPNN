@@ -104,9 +104,9 @@ def main(args):
         folder_with_pdbs_path = folder_with_pdbs_path+'/'
     
     
-    init_alphabet = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z']
-    extra_alphabet = [str(item) for item in list(np.arange(300))]
-    chain_alphabet = init_alphabet + extra_alphabet
+    alphabetic_chain_ids = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z']
+    numeric_chain_ids = [str(item) for item in list(np.arange(300))]
+    candidate_chain_ids = alphabetic_chain_ids + numeric_chain_ids
     
     biounit_names = glob.glob(folder_with_pdbs_path+'*.pdb')
     for biounit in biounit_names:
@@ -119,30 +119,30 @@ def main(args):
         concat_O = []
         concat_mask = []
         coords_dict = {}
-        for letter in chain_alphabet:
+        for chain_id in candidate_chain_ids:
             if ca_only:
                 sidechain_atoms = ['CA']
             else:
                 sidechain_atoms = ['N', 'CA', 'C', 'O']
-            xyz, seq = parse_PDB_biounits(biounit, atoms=sidechain_atoms, chain=letter)
+            xyz, seq = parse_PDB_biounits(biounit, atoms=sidechain_atoms, chain=chain_id)
             if xyz is not None:
                 concat_seq += seq
-                my_dict['seq_chain_'+letter]=seq
+                my_dict[f'seq_chain_{chain_id}']=seq
                 coords_dict_chain = {}
                 if ca_only:
-                    coords_dict_chain['CA_chain_'+letter]=xyz.tolist()
+                    coords_dict_chain[f'CA_chain_{chain_id}']=xyz.tolist()
                 else:
-                    coords_dict_chain['N_chain_' + letter] = xyz[:, 0, :].tolist()
-                    coords_dict_chain['CA_chain_' + letter] = xyz[:, 1, :].tolist()
-                    coords_dict_chain['C_chain_' + letter] = xyz[:, 2, :].tolist()
-                    coords_dict_chain['O_chain_' + letter] = xyz[:, 3, :].tolist()
-                my_dict['coords_chain_'+letter]=coords_dict_chain
+                    coords_dict_chain[f'N_chain_{chain_id}'] = xyz[:, 0, :].tolist()
+                    coords_dict_chain[f'CA_chain_{chain_id}'] = xyz[:, 1, :].tolist()
+                    coords_dict_chain[f'C_chain_{chain_id}'] = xyz[:, 2, :].tolist()
+                    coords_dict_chain[f'O_chain_{chain_id}'] = xyz[:, 3, :].tolist()
+                my_dict[f'coords_chain_{chain_id}']=coords_dict_chain
                 s += 1
         fi = biounit.rfind("/")
         my_dict['name']=biounit[(fi+1):-4]
         my_dict['num_of_chains'] = s
         my_dict['seq'] = concat_seq
-        if s < len(chain_alphabet):
+        if s < len(candidate_chain_ids):
             pdb_dict_list.append(my_dict)
             c+=1
             

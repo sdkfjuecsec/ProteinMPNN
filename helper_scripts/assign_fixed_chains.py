@@ -18,7 +18,7 @@ def main(args):
         else:
             #manually specify, e.g.
             designed_chain_list = ["A"]
-        fixed_chain_list = [letter for letter in all_chain_list if letter not in designed_chain_list] #fix/do not redesign these chains 
+        fixed_chain_list = [chain_id for chain_id in all_chain_list if chain_id not in designed_chain_list] #fix/do not redesign these chains 
         my_dict[result['name']]= (designed_chain_list, fixed_chain_list)
     
     with open(args.output_path, 'w') as f:

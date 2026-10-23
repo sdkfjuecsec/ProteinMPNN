@@ -351,17 +351,17 @@ def parse_PDB(
     # c: counter of successfully parsed structures (unused, kept from original implementation)
     c=0
     # list that holds the parsed dict for each PDB file; this is the return value
-    pdb_dict_list = []
-    # candidate chain names: uppercase A-Z followed by lowercase a-z (52 letters)
-    init_alphabet = list(string.ascii_uppercase + string.ascii_lowercase)
+    pdb_dict_list: list[dict[str, Any]] = []
+    # candidate chain IDs: uppercase A-Z followed by lowercase a-z (52 single characters)
+    alphabetic_chain_ids: list[str] = list(string.ascii_uppercase + string.ascii_lowercase)
     # second layer: numbers 0..299 for large complexes that use numeric chain IDs
-    extra_alphabet = [str(item) for item in list(np.arange(300))]
-    # combined candidate list (352 entries); each name is probed to see if the chain exists
-    chain_alphabet = init_alphabet + extra_alphabet
+    numeric_chain_ids: list[str] = [str(item) for item in list(np.arange(300))]
+    # combined candidate list (352 entries); each ID is probed to see if the chain exists
+    candidate_chain_ids: list[str] = alphabetic_chain_ids + numeric_chain_ids
      
     # if the user explicitly supplies chains, use only those (faster than exhaustive search)
     if input_chain_list:
-        chain_alphabet = input_chain_list  
+        candidate_chain_ids = input_chain_list  
  
     # list of files to parse (single file here; loop structure supports multi-biological-unit files)
     biounit_names = [path_to_pdb]
@@ -380,7 +380,7 @@ def parse_PDB(
         concat_mask = []
         coords_dict = {}
         # iterate over candidate chain names and try to extract coordinates for each
-        for letter in chain_alphabet:
+        for chain_id in candidate_chain_ids:
             # choose which atom types to extract based on the ca_only flag
             if ca_only:
                 sidechain_atoms = ['CA']
@@ -389,26 +389,26 @@ def parse_PDB(
             # call the low-level parser: filter the PDB text by chain and atom names
             # returns coords_array: shape (n_residues, n_atoms, 3) coordinate array; seq: amino-acid sequence string
             # if the chain does not exist, returns (None, None)
-            coords_array, seq = parse_PDB_biounits(biounit, atom_names=sidechain_atoms, chain=letter)
+            coords_array, seq = parse_PDB_biounits(biounit, atom_names=sidechain_atoms, chain=chain_id)
             # only write to the dict when coords_array is not None, i.e. the chain actually exists
             if coords_array is not None:
                 # append this chain's sequence to the concatenated full sequence
                 concat_seq += seq
                 # store this chain's sequence under a key like 'seq_chain_A'
-                my_dict['seq_chain_'+letter] = seq
+                my_dict[f'seq_chain_{chain_id}'] = seq
                 # initialize the coordinate sub-dict for this chain
                 coords_dict_chain = {}
                 # coarse-grained mode: store only C-alpha coordinates, shape (n_res, 3)
                 if ca_only:
-                    coords_dict_chain['CA_chain_'+letter] = coords_array.tolist()
+                    coords_dict_chain[f'CA_chain_{chain_id}'] = coords_array.tolist()
                 # full backbone mode: store N / CA / C / O coordinates separately, each shape (n_res, 3)
                 else:
-                    coords_dict_chain['N_chain_' + letter] = coords_array[:, 0, :].tolist()
-                    coords_dict_chain['CA_chain_' + letter] = coords_array[:, 1, :].tolist()
-                    coords_dict_chain['C_chain_' + letter] = coords_array[:, 2, :].tolist()
-                    coords_dict_chain['O_chain_' + letter] = coords_array[:, 3, :].tolist()
+                    coords_dict_chain[f'N_chain_{chain_id}'] = coords_array[:, 0, :].tolist()
+                    coords_dict_chain[f'CA_chain_{chain_id}'] = coords_array[:, 1, :].tolist()
+                    coords_dict_chain[f'C_chain_{chain_id}'] = coords_array[:, 2, :].tolist()
+                    coords_dict_chain[f'O_chain_{chain_id}'] = coords_array[:, 3, :].tolist()
                 # attach this chain's coordinate sub-dict to the main dict under 'coords_chain_A' etc.
-                my_dict['coords_chain_'+letter]=coords_dict_chain
+                my_dict[f'coords_chain_{chain_id}']=coords_dict_chain
                 # increment the parsed-chain counter
                 s += 1
         # strip the directory prefix using the platform's own path rules: os.path.basename
@@ -421,7 +421,7 @@ def parse_PDB(
         # store the concatenated sequence of all chains
         my_dict['seq'] = concat_seq
         # this condition is always true (s never exceeds the candidate count); effectively a no-op filter
-        if s <= len(chain_alphabet):
+        if s <= len(candidate_chain_ids):
             # add this file's parsed dict to the return list
             pdb_dict_list.append(my_dict)
             # increment the (unused) structure counter
@@ -452,12 +452,12 @@ class TiedFeatures(NamedTuple):
     chain_M: torch.Tensor
     # Integer chain encoding number per residue, [B, L]
     chain_encoding_all: torch.Tensor
-    # Chain letters of every chain, one inner list per structure
-    all_chain_letters_per_entry: list[list[str]]
-    # Visible (fixed context) chain letters, one inner list per structure
-    visible_chain_letters_per_entry: list[list[str]]
-    # Masked (designed) chain letters, one inner list per structure
-    masked_chain_letters_per_entry: list[list[str]]
+    # Chain IDs of every chain, one inner list per structure
+    all_chain_ids_per_entry: list[list[str]]
+    # Visible (fixed context) chain IDs, one inner list per structure
+    visible_chain_ids_per_entry: list[list[str]]
+    # Masked (designed) chain IDs, one inner list per structure
+    masked_chain_ids_per_entry: list[list[str]]
     # Residue count of each masked chain, one inner list per structure
     masked_chain_lengths_per_entry: list[list[int]]
     # Per-position design mask, [B, L]; internal name is free_residue_mask
@@ -517,7 +517,7 @@ def tied_featurize(
         device: torch device on which the returned tensors are placed, e.g.
             ``torch.device('cuda:0')``.
         chain_dict: optional mapping of structure name to a
-            ``(masked_chain_letters, visible_chain_letters)`` pair; masked chains are
+            ``(masked_chain_ids, visible_chain_ids)`` pair; masked chains are
             (re)designed, visible chains are kept fixed as context (both lists are
             sorted internally, so their input order does not matter). An omitted dict
             (None) treats every parsed chain as masked, i.e. designs everything. E.g.
@@ -525,7 +525,7 @@ def tied_featurize(
                 {
                     '1abc': (['A', 'B'], ['C']),
                 }
-        fixed_position_dict: optional mapping of structure name to chain letter to
+        fixed_position_dict: optional mapping of structure name to chain ID to
             the list of 1-based, chain-local residue positions that must keep their
             native amino acid. Positions are counted from 1 along that chain's own
             sequence. Only masked chains are consulted, but every masked chain must be
@@ -539,7 +539,7 @@ def tied_featurize(
                     },
                 }
         omit_AA_dict: optional per-chain amino-acid omission constraints. Maps PDB
-            name to chain letter to a list of ``(positions, letters)`` rules;
+            name to chain ID to a list of ``(positions, letters)`` rules;
             each rule pairs a list of 1-based residue positions with the list
             of amino-acid letters forbidden at those positions. Each pair is a
             2-element array, exactly as decoded from JSON, and every masked chain must
@@ -556,14 +556,14 @@ def tied_featurize(
                 }
         tied_positions_dict: optional tied-position groups forcing identical amino
             acids across chains (homomer design). Maps structure name to a list of
-            groups; each group maps a chain letter to its tied 1-based, chain-local
+            groups; each group maps a chain ID to its tied 1-based, chain-local
             positions (numbered as in ``fixed_position_dict``, and a group may span two
             or more chains). All positions of one group are decoded as a single step
             and must receive the exact same residue. A chain value is either a plain
             list of positions (weight 1.0 everywhere) or a ``[positions, weights]``
             pair, whose weights are written into the matching slots of
             ``tied_position_weight``. Unlike the dicts above it is keyed by structure
-            name only, so chain letters can be listed per group. E.g. tie A1/A2/A3 to
+            name only, so chain IDs can be listed per group. E.g. tie A1/A2/A3 to
             B1/B2/B3, and in a second group tie A5/A6 to B5/B6 down-weighting residue 6
             to 0.5:
                 {
@@ -574,7 +574,7 @@ def tied_featurize(
                     ],
                 }
         pssm_dict: optional per-chain PSSM data (coef/bias/log-odds). Maps structure
-            name to chain letter to a dict holding the keys ``'pssm_coef'``
+            name to chain ID to a dict holding the keys ``'pssm_coef'``
             (shape ``[chain_length]``), ``'pssm_bias'`` and ``'pssm_log_odds'``
             (shape ``[chain_length, num_amino_acid_types]``, i.e. ``[chain_length, 21]``).
             Only masked chains are consulted, but every masked chain must be listed;
@@ -592,7 +592,7 @@ def tied_featurize(
                         'B': {},
                     },
                 }
-        bias_by_res_dict: optional mapping of structure name to chain letter to a
+        bias_by_res_dict: optional mapping of structure name to chain ID to a
             per-residue amino-acid bias array of shape
             ``[chain_length, num_amino_acid_types]`` (i.e. ``[chain_length, 21]``) that
             is added to the model logits. Only masked chains are consulted, but every
@@ -615,7 +615,7 @@ def tied_featurize(
 
         - ``B``: batch axis, the number of structures in the batch, i.e.
           ``len(pdb_dict_list)`` (local variable ``B``); note that the chain
-          letter ``'B'`` used elsewhere in this docstring is a different thing
+          ID ``'B'`` used elsewhere in this docstring is a different thing
         - ``L``: length axis, the maximum total number of residues in an entry
           across the batch (summed over all chains), to which every entry is
           padded (local variable ``L``); the unpadded length of the entry being
@@ -655,18 +655,18 @@ def tied_featurize(
            Internally the model builds ``chain_M * chain_M_pos * mask``:
            sampling writes residues only where that product is 1.0, and scores
            are averaged over the same positions
-        6. ``chain_encoding_all`` (torch.Tensor, int64): integer chain id per
+        6. ``chain_encoding_all`` (torch.Tensor, int64): integer chain encoding number per
            residue [B, L] (1 for the first chain, 2 for the second, ...)
-        7. ``all_chain_letters_per_entry`` (list[list[str]], plain Python list): chain
-           letters of every chain per structure. The outer list has one element
+        7. ``all_chain_ids_per_entry`` (list[list[str]], plain Python list): chain
+           IDs of every chain per structure. The outer list has one element
            per PDB structure (length B); the inner list holds that structure's
-           chain letters in processing order (masked chains first, then visible
+           chain IDs in processing order (masked chains first, then visible
            chains). It is ragged, so it has no fixed [B, L] shape
-        8. ``visible_chain_letters_per_entry`` (list[list[str]], plain Python list): visible
-           (fixed context) chain letters per structure, one inner list per PDB
+        8. ``visible_chain_ids_per_entry`` (list[list[str]], plain Python list): visible
+           (fixed context) chain IDs per structure, one inner list per PDB
            structure
-        9. ``masked_chain_letters_per_entry`` (list[list[str]], plain Python list): masked
-           (designed) chain letters per structure, one inner list per PDB
+        9. ``masked_chain_ids_per_entry`` (list[list[str]], plain Python list): masked
+           (designed) chain IDs per structure, one inner list per PDB
            structure
         10. ``masked_chain_lengths_per_entry`` (list[list[int]], plain Python
             list): residue length of each masked chain, one inner list per PDB
@@ -684,7 +684,7 @@ def tied_featurize(
         13. ``residue_idx`` (torch.Tensor, int64): per-residue numbering [B, L].
             Each chain gets a disjoint band of width 100: for the chain with
             1-based id ``chain_encoding_number`` (the same value stored in
-            ``chain_encoding_all`` -- not the PDB chain letter) the residue at
+            ``chain_encoding_all`` -- not the PDB chain ID) the residue at
             0-based position ``k`` in the entry's concatenated chain layout is
             numbered ``100 * (chain_encoding_number - 1) + k``; -100 marks padding. The
             100-wide bands keep numbering of different chains non-consecutive,
@@ -708,13 +708,13 @@ def tied_featurize(
     '''
     # Shape notation used below:
     #   B = number of PDB structures packed into one batch (batch axis); this is
-    #       unrelated to the chain letter 'B' mentioned in the examples above
+    #       unrelated to the chain ID 'B' mentioned in the examples above
     #   L = maximum total sequence length across the batch (padded residue axis)
     #   C = chain_length (residues of a single chain)
     #   num_amino_acid_types = len(alphabet) = 21 (amino-acid axis)
     # The coordinate tensor is called X, matching the returned field name and the
     # model-side convention; this X has nothing to do with the unknown-residue code
-    # 'X' or the chain-letter placeholder ``coords_chain_X`` used in the docstring
+    # 'X' or the chain-ID placeholder ``coords_chain_X`` used in the docstring
     # Amino-acid alphabet used to convert one-letter codes into integer labels
     alphabet: str = PROTEIN_ALPHABET
     # Number of amino-acid classes: 20 standard residues plus the unknown code X.
@@ -759,7 +759,7 @@ def tied_featurize(
     free_residue_mask: np.ndarray = np.zeros([B, L], dtype=np.int32)
     # Per-position amino-acid bias added to the model logits [B, L, num_amino_acid_types]
     bias_by_res_all: np.ndarray = np.zeros([B, L, num_amino_acid_types], dtype=np.float32)
-    # Integer chain id per position [B, L] (1 for the first chain, 2 for the second, ...)
+    # Integer chain encoding number per position [B, L] (1 for the first chain, 2 for the second, ...)
     chain_encoding_all: np.ndarray = np.zeros([B, L], dtype=np.int32)
     # Amino-acid sequence encoded as integer residue-type indices, shape [B, L].
     # "Integer" means a 0-based index
@@ -770,13 +770,13 @@ def tied_featurize(
     residue_type_indices: np.ndarray = np.zeros([B, L], dtype=np.int32)
     # Per-position mask of amino-acid types to omit during sampling [B, L, num_amino_acid_types]
     omit_AA_mask: np.ndarray = np.zeros([B, L, num_amino_acid_types], dtype=np.int32)
-    # Per-entry list of all chain letters in processing order; ragged Python list
-    # of length B, each inner list holding that entry's chain letters
-    all_chain_letters_per_entry: list[list[str]] = []
-    # Per-entry list of visible (fixed context) chain letters; ragged, length B
-    visible_chain_letters_per_entry: list[list[str]] = []
-    # Per-entry list of masked (designed) chain letters; ragged, length B
-    masked_chain_letters_per_entry: list[list[str]] = []
+    # Per-entry list of all chain IDs in processing order; ragged Python list
+    # of length B, each inner list holding that entry's chain IDs
+    all_chain_ids_per_entry: list[list[str]] = []
+    # Per-entry list of visible (fixed context) chain IDs; ragged, length B
+    visible_chain_ids_per_entry: list[list[str]] = []
+    # Per-entry list of masked (designed) chain IDs; ragged, length B
+    masked_chain_ids_per_entry: list[list[str]] = []
     # Per-entry list of masked-chain lengths; ragged, length B, inner lists of
     # Python ints (one per masked chain of that entry)
     masked_chain_lengths_per_entry: list[list[int]] = []
@@ -805,7 +805,7 @@ def tied_featurize(
         # Resolve which chains are masked (designed) vs visible (fixed context)
         # for this entry; resolved per entry so a heterogeneous batch stays correct
         if chain_dict is not None:
-            # User-supplied (masked_chain_letters, visible_chain_letters) pair for
+            # User-supplied (masked_chain_ids, visible_chain_ids) pair for
             # this entry. Example, for a batch of two entries:
             #   print(chain_dict)
             #   {'1abc': (['A', 'B'], ['C']), '2def': (['D'], ['E', 'F']), ...}
@@ -814,25 +814,25 @@ def tied_featurize(
             # Chains listed in neither bucket are dropped from that entry entirely.
             # Copy both lists so sorting them below never reorders the caller-owned
             # chain_dict, and so returned metadata does not alias it
-            masked_chain_letters: list[str] = list(chain_dict[pdb_dict['name']][0])
-            visible_chain_letters: list[str] = list(chain_dict[pdb_dict['name']][1])
+            masked_chain_ids: list[str] = list(chain_dict[pdb_dict['name']][0])
+            visible_chain_ids: list[str] = list(chain_dict[pdb_dict['name']][1])
         else:
             # Otherwise treat every parsed chain as masked (design everything).
             # Iterating the dict yields its keys, e.g. 'seq_chain_A'; the text after
-            # the prefix is the chain letter itself
-            masked_chain_letters = [key.removeprefix('seq_chain_') for key in pdb_dict if key.startswith('seq_chain_')]
-            visible_chain_letters = []
-        # Sort chain letters for deterministic ordering
-        masked_chain_letters.sort()
-        visible_chain_letters.sort()
+            # the prefix is the chain ID itself
+            masked_chain_ids = [key.removeprefix('seq_chain_') for key in pdb_dict if key.startswith('seq_chain_')]
+            visible_chain_ids = []
+        # Sort chain IDs for deterministic ordering
+        masked_chain_ids.sort()
+        visible_chain_ids.sort()
         # Processing order: masked chains first, then visible chains; ragged
-        # Python list with one letter per chain of this entry
-        all_chain_letters: list[str] = masked_chain_letters + visible_chain_letters
+        # Python list with one ID per chain of this entry
+        all_chain_ids: list[str] = masked_chain_ids + visible_chain_ids
         # Per-chain backbone coordinates for this entry; one array of shape
         # [C, 4, 3] per chain ([C, 1, 3] in ca_only mode)
         chain_backbone_coordinates_list: list[np.ndarray] = []
         # Per-chain chain-level design mask; one 1-D array of shape [C] per chain,
-        # appended in the order of all_chain_letters (masked chains first, visible
+        # appended in the order of all_chain_ids (masked chains first, visible
         # chains after). Every element of one array holds the same value because
         # the decision is made per chain, not per residue: 1.0 across a masked
         # (designed) chain, 0.0 across a visible (fixed-context) chain.
@@ -846,7 +846,7 @@ def tied_featurize(
         # backbone atoms are not zeroed here, the model applies ``chain_M * mask``.
         chain_mask_list: list[np.ndarray] = []
         # Per-chain one-letter sequences for this entry; one string of length C per
-        # chain, in the same order as all_chain_letters. Gaps '-' are already
+        # chain, in the same order as all_chain_ids. Gaps '-' are already
         # replaced by the unknown-residue code 'X', so every character is a member
         # of PROTEIN_ALPHABET.
         # Example, for the 10-residue chain A and 6-residue chain B used above:
@@ -855,17 +855,17 @@ def tied_featurize(
         chain_seq_list: list[str] = []
         # Per-chain integer chain-encoding arrays; one array of shape [C] per chain,
         # constant within a chain and equal to chain_encoding_number (1-based, in
-        # packing order, unrelated to the PDB chain letter).
+        # packing order, unrelated to the PDB chain ID).
         # Example, for the same two chains:
         #   print([chain_encoding.tolist() for chain_encoding in chain_encoding_list])
         #   [[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],  # chain A -> id 1
         #    [2.0, 2.0, 2.0, 2.0, 2.0, 2.0]]                     # chain B -> id 2
         chain_encoding_list: list[np.ndarray] = []
-        # 1-based running chain encoding number (not the PDB chain letter),
+        # 1-based running chain encoding number (not the PDB chain ID),
         # incremented after each chain is packed
         chain_encoding_number: int = 1
         # Start offset of each chain in the concatenated layout, indexed by the
-        # chain's position in all_chain_letters; the first chain starts at 0. Length is
+        # chain's position in all_chain_ids; the first chain starts at 0. Length is
         # num_chains + 1, so the last element also marks the exclusive end of the
         # final chain (equal to the entry's total residue count)
         global_chain_start_offsets: list[int] = [0]
@@ -891,18 +891,18 @@ def tied_featurize(
         # End offset of the current chain in the concatenated layout (exclusive)
         current_chain_end: int = 0
         # Iterate over chains in processing order (masked first, then visible)
-        for step, letter in enumerate(all_chain_letters):
+        for step, chain_id in enumerate(all_chain_ids):
             # Visible chains provide fixed structural context
-            if letter in visible_chain_letters:
+            if chain_id in visible_chain_ids:
                 # Native sequence of this chain
-                chain_seq: str = pdb_dict[f'seq_chain_{letter}']
+                chain_seq: str = pdb_dict[f'seq_chain_{chain_id}']
                 # Replace gap markers with the unknown-residue code X
                 chain_seq = chain_seq.replace('-', 'X')
                 # Number of residues in this chain
                 chain_length: int = len(chain_seq)
                 # Record where the next chain starts in the concatenated layout
                 global_chain_start_offsets.append(global_chain_start_offsets[-1] + chain_length)
-                # Per-chain backbone atom coordinates, keyed as '{atom}_chain_{letter}'
+                # Per-chain backbone atom coordinates, keyed as '{atom}_chain_{chain_id}'
                 # with atom one of N, CA, C, O. Each value is a plain Python list of
                 # shape [chain_length, 3] holding one [x, y, z] row per residue, e.g.
                 # chain_coords['CA_chain_A'][2] is residue 3's CA position in chain A
@@ -913,18 +913,18 @@ def tied_featurize(
                 #     'C_chain_A':  [[-12.1, 6.7, -0.7], [-11.6, 5.8, -2.3]],
                 #     'O_chain_A':  [[-11.1, 7.0, -0.8], [-12.2, 5.3, -3.0]],
                 # }
-                chain_coords: dict[str, Any] = pdb_dict[f'coords_chain_{letter}']
+                chain_coords: dict[str, Any] = pdb_dict[f'coords_chain_{chain_id}']
                 # Visible chains are not predicted: design mask is all zeros, shape [C]
                 chain_mask: np.ndarray = np.zeros(chain_length) #0.0 for visible chains
                 if ca_only:
                     # Keep only CA coordinates, shape [C, 1, 3]
-                    chain_backbone_coordinates: np.ndarray = np.array(chain_coords[f'CA_chain_{letter}'])
+                    chain_backbone_coordinates: np.ndarray = np.array(chain_coords[f'CA_chain_{chain_id}'])
                     # Add the missing atom axis when the array is 2-D
                     if len(chain_backbone_coordinates.shape) == 2:
                         chain_backbone_coordinates = chain_backbone_coordinates[:, None, :]
                 else:
                     # Stack N, CA, C, O coordinates into [C, 4, 3]
-                    chain_backbone_coordinates: np.ndarray = np.stack([np.array(chain_coords[f'{atom}_chain_{letter}']) for atom in ['N', 'CA', 'C', 'O']], axis=1) 
+                    chain_backbone_coordinates: np.ndarray = np.stack([np.array(chain_coords[f'{atom}_chain_{chain_id}']) for atom in ['N', 'CA', 'C', 'O']], axis=1) 
                 # Collect the per-chain arrays
                 chain_backbone_coordinates_list.append(chain_backbone_coordinates)
                 chain_mask_list.append(chain_mask)
@@ -959,9 +959,9 @@ def tied_featurize(
                 # No per-residue bias for visible chains: [C, num_amino_acid_types] zeros
                 bias_by_res_list.append(np.zeros([chain_length, num_amino_acid_types]))
             # Masked chains are the design targets
-            if letter in masked_chain_letters:
+            if chain_id in masked_chain_ids:
                 # Native sequence of this chain
-                chain_seq = pdb_dict[f'seq_chain_{letter}']
+                chain_seq = pdb_dict[f'seq_chain_{chain_id}']
                 # Replace gap markers with the unknown-residue code X
                 chain_seq = chain_seq.replace('-', 'X')
                 # Number of residues in this chain
@@ -971,25 +971,25 @@ def tied_featurize(
                 # Track masked-chain lengths for later chain splitting
                 masked_chain_lengths.append(chain_length)
                 # Same per-chain coordinate dict as in the visible branch above: keyed as
-                # '{atom}_chain_{letter}' for atom in {N, CA, C, O}, each value a plain
+                # '{atom}_chain_{chain_id}' for atom in {N, CA, C, O}, each value a plain
                 # Python list of shape [chain_length, 3] with one [x, y, z] per residue
-                chain_coords: dict[str, Any] = pdb_dict[f'coords_chain_{letter}']
+                chain_coords: dict[str, Any] = pdb_dict[f'coords_chain_{chain_id}']
                 # Masked chains are predicted: design mask is all ones, shape [C]
                 chain_mask = np.ones(chain_length) #1.0 for masked
                 if ca_only:
                     # Keep only CA coordinates, shape [C, 1, 3]
-                    chain_backbone_coordinates = np.array(chain_coords[f'CA_chain_{letter}'])
+                    chain_backbone_coordinates = np.array(chain_coords[f'CA_chain_{chain_id}'])
                     # Add the missing atom axis when the array is 2-D
                     if len(chain_backbone_coordinates.shape) == 2:
                         chain_backbone_coordinates = chain_backbone_coordinates[:, None, :]
                 else:
                     # Stack N, CA, C, O coordinates into [C, 4, 3]
-                    chain_backbone_coordinates = np.stack([np.array(chain_coords[f'{atom}_chain_{letter}']) for atom in ['N', 'CA', 'C', 'O']], axis=1) 
+                    chain_backbone_coordinates = np.stack([np.array(chain_coords[f'{atom}_chain_{chain_id}']) for atom in ['N', 'CA', 'C', 'O']], axis=1) 
                 # Collect the per-chain arrays
                 chain_backbone_coordinates_list.append(chain_backbone_coordinates)
                 chain_mask_list.append(chain_mask)
                 chain_seq_list.append(chain_seq)
-                # Tag every residue of this chain with the current chain id
+                # Tag every residue of this chain with the current chain encoding number
                 chain_encoding_list.append(chain_encoding_number * np.ones(chain_length))
                 # Advance the end offset
                 current_chain_end += chain_length
@@ -1002,7 +1002,7 @@ def tied_featurize(
                 # Start with every position free to be designed, shape [C]
                 chain_free_residue_mask = np.ones(chain_length)
                 # Apply user-specified fixed positions when provided
-                # fixed_position_dict maps structure name -> chain letter -> 1-based,
+                # fixed_position_dict maps structure name -> chain ID -> 1-based,
                 # chain-local residue positions that keep their native amino acid.
                 # Only masked chains are looked up, and every masked chain must have
                 # an entry ([] leaves that chain fully free). Sample for entry '1abc'
@@ -1015,7 +1015,7 @@ def tied_featurize(
                 # }
                 if fixed_position_dict is not None:
                     # 1-based positions to keep fixed on this chain; Python list
-                    fixed_pos_list: list[int] = fixed_position_dict[pdb_dict['name']][letter]
+                    fixed_pos_list: list[int] = fixed_position_dict[pdb_dict['name']][chain_id]
                     if fixed_pos_list:
                         # Mark fixed positions as 0.0 (converting to 0-based indices)
                         chain_free_residue_mask[np.array(fixed_pos_list)-1] = 0.0
@@ -1035,7 +1035,7 @@ def tied_featurize(
                     #         ],
                     #     },
                     # }
-                    for item in omit_AA_dict[pdb_dict['name']][letter]:
+                    for item in omit_AA_dict[pdb_dict['name']][chain_id]:
                         # for example, item is [[1, 3, 5], ['A', 'W']]
                         # 0-based residue positions, Python list
                         idx_AA: list[int] = [position - 1 for position in item[0]]
@@ -1056,7 +1056,7 @@ def tied_featurize(
                 pssm_bias = np.zeros([chain_length, num_amino_acid_types])  # [C, num_amino_acid_types]
                 pssm_log_odds = 10000.0 * np.ones([chain_length, num_amino_acid_types])  # [C, num_amino_acid_types]
                 # Override with the user-supplied PSSM when available
-                # pssm_dict maps structure name -> chain letter -> dict holding
+                # pssm_dict maps structure name -> chain ID -> dict holding
                 # 'pssm_coef' [C], 'pssm_bias' [C, num_amino_acid_types] and
                 # 'pssm_log_odds' [C, num_amino_acid_types]. Only masked chains are
                 # consulted, but every masked chain must be listed; a chain mapped to
@@ -1075,15 +1075,15 @@ def tied_featurize(
                 #     },
                 # }
                 if pssm_dict:
-                    if pssm_dict[pdb_dict['name']][letter]:
-                        pssm_coef = pssm_dict[pdb_dict['name']][letter]['pssm_coef']
-                        pssm_bias = pssm_dict[pdb_dict['name']][letter]['pssm_bias']
-                        pssm_log_odds = pssm_dict[pdb_dict['name']][letter]['pssm_log_odds']
+                    if pssm_dict[pdb_dict['name']][chain_id]:
+                        pssm_coef = pssm_dict[pdb_dict['name']][chain_id]['pssm_coef']
+                        pssm_bias = pssm_dict[pdb_dict['name']][chain_id]['pssm_bias']
+                        pssm_log_odds = pssm_dict[pdb_dict['name']][chain_id]['pssm_log_odds']
                 pssm_coef_list.append(pssm_coef)
                 pssm_bias_list.append(pssm_bias)
                 pssm_log_odds_list.append(pssm_log_odds)
                 # Per-residue amino-acid bias added to the model logits
-                # bias_by_res_dict maps structure name -> chain letter -> array of
+                # bias_by_res_dict maps structure name -> chain ID -> array of
                 # shape [C, num_amino_acid_types] (i.e. [C, 21]); 0.0 in a cell means
                 # "no bias for this residue/amino-acid pair". Only masked chains are
                 # consulted, and every masked chain must be listed: the lookup is
@@ -1098,7 +1098,7 @@ def tied_featurize(
                 #     },
                 # }
                 if bias_by_res_dict:
-                    bias_by_res_list.append(bias_by_res_dict[pdb_dict['name']][letter])
+                    bias_by_res_list.append(bias_by_res_dict[pdb_dict['name']][chain_id])
                 else:
                     bias_by_res_list.append(np.zeros([chain_length, num_amino_acid_types]))
 
@@ -1117,7 +1117,7 @@ def tied_featurize(
             tied_pos_list: list[dict[str, Any]] = tied_positions_dict[pdb_dict['name']]
             if tied_pos_list:
                 # tied_pos_list for entry '1abc': a list of tied groups, each
-                # mapping a chain letter to 1-based positions, plain (Step 1)
+                # mapping a chain ID to 1-based positions, plain (Step 1)
                 # or paired with per-position weights (Step 2):
                 # [
                 #     {'A': [1, 2, 3], 'B': [1, 2, 3]},   # Step 1
@@ -1132,10 +1132,10 @@ def tied_featurize(
                     # Absolute 0-based indices of the tied positions in this group;
                     # Python list, order follows the group's chain iteration
                     tied_position_group: list[int] = []
-                    # Each entry maps a chain letter to its tied residue positions
-                    for chain_letter, v in tied_item.items():
+                    # Each entry maps a chain ID to its tied residue positions
+                    for chain_id, v in tied_item.items():
                         # Start offset of this chain in the concatenated layout; scalar int
-                        start_offset: int = global_chain_start_offsets[all_chain_letters.index(chain_letter)]
+                        start_offset: int = global_chain_start_offsets[all_chain_ids.index(chain_id)]
                         # v holds [positions, weights] when per-position weights are given,
                         # i.e. two parallel Python lists of equal length
                         if isinstance(v[0], list):
@@ -1161,7 +1161,7 @@ def tied_featurize(
         all_chain_sequence: str = "".join(chain_seq_list)
         # Concatenated chain-level design mask [L_entry]; 1.0 for positions that need to be predicted
         all_chain_mask: np.ndarray = np.concatenate(chain_mask_list, 0)
-        # Concatenated integer chain ids [L_entry]
+        # Concatenated integer chain encoding number [L_entry]
         all_chain_encoding: np.ndarray = np.concatenate(chain_encoding_list, 0)
         # Concatenated free-residue mask [L_entry]; 1.0 for free (designable) positions, 0.0 for user-fixed positions
         all_chain_free_residue_mask: np.ndarray = np.concatenate(free_residue_mask_list, 0)
@@ -1224,9 +1224,9 @@ def tied_featurize(
         # Store the encoded sequence in the pdb_dict_list array
         residue_type_indices[i, :entry_sequence_length] = indices
         # Record the per-entry chain metadata
-        all_chain_letters_per_entry.append(all_chain_letters)
-        visible_chain_letters_per_entry.append(visible_chain_letters)
-        masked_chain_letters_per_entry.append(masked_chain_letters)
+        all_chain_ids_per_entry.append(all_chain_ids)
+        visible_chain_ids_per_entry.append(visible_chain_ids)
+        masked_chain_ids_per_entry.append(masked_chain_ids)
         masked_chain_lengths_per_entry.append(masked_chain_lengths)
 
     # Boolean array of padding (NaN) coordinate entries, shape [B, L, 4, 3]
@@ -1289,9 +1289,9 @@ def tied_featurize(
         sequence_lengths=sequence_lengths,  # [B] int32
         chain_M=chain_design_mask,  # [B, L] float32; local name is chain_design_mask
         chain_encoding_all=chain_encoding_all,  # [B, L] int64
-        all_chain_letters_per_entry=all_chain_letters_per_entry,  # length B, one list[str] per entry
-        visible_chain_letters_per_entry=visible_chain_letters_per_entry,  # length B, one list[str] per entry
-        masked_chain_letters_per_entry=masked_chain_letters_per_entry,  # length B, one list[str] per entry
+        all_chain_ids_per_entry=all_chain_ids_per_entry,  # length B, one list[str] per entry
+        visible_chain_ids_per_entry=visible_chain_ids_per_entry,  # length B, one list[str] per entry
+        masked_chain_ids_per_entry=masked_chain_ids_per_entry,  # length B, one list[str] per entry
         masked_chain_lengths_per_entry=masked_chain_lengths_per_entry,  # length B, one list[int] per entry
         chain_M_pos=free_residue_mask,  # [B, L] float32; local name is free_residue_mask
         omit_AA_mask=omit_AA_mask,  # [B, L, num_amino_acid_types] float32
@@ -1421,7 +1421,7 @@ class StructureDatasetPDB():
         for i, entry in enumerate(pdb_dict_list):
             # extract the one-letter amino acid sequence from the entry
             seq: str = entry['seq']
-            # extract the entry name (e.g. PDB code + chain identifier)
+            # extract the entry name (e.g. PDB code + chain IDentifier)
             name: str = entry['name']
 
             # find any characters in the sequence that are not in the alphabet
