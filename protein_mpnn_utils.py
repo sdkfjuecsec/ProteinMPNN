@@ -279,7 +279,12 @@ def parse_PDB_biounits(
         # signal "chain not found" to the caller
         return None, None
 
-def parse_PDB(path_to_pdb, input_chain_list=None, ca_only=False):
+
+def parse_PDB(
+    path_to_pdb: str,
+    input_chain_list: list[str] | None = None,
+    ca_only: bool = False,
+) -> list[dict[str, Any]]:
     '''
     Parse a single PDB file into the ``seq_chain_X`` / ``coords_chain_X`` dict format.
 
@@ -298,23 +303,37 @@ def parse_PDB(path_to_pdb, input_chain_list=None, ca_only=False):
             backbone ``['N', 'CA', 'C', 'O']`` is extracted.
 
     Returns:
-        list[dict]: one dict per parsed file. The outer loop currently runs over a single
-        file, so the list normally holds exactly one entry. Each dict has the keys below,
-        inserted chain by chain in the order the chains were probed:
+        list[dict[str, Any]]: one dict per parsed file; the outer loop currently runs over a
+        single file, so the list normally holds exactly one entry. Keys are inserted chain by
+        chain, in the order the chains were probed. For 6EHB parsed with chains A and C and
+        ``ca_only=False`` the entry looks like (sequences and coordinate lists truncated)::
 
-        - ``'seq_chain_<ID>'``: one-letter sequence of chain ``<ID>``, with ``'-'`` for
-          missing/unknown residues.
-        - ``'coords_chain_<ID>'``: per-chain coordinate sub-dict. With ``ca_only=True`` it
-          holds only ``'CA_chain_<ID>'``; otherwise it holds ``'N_chain_<ID>'``,
-          ``'CA_chain_<ID>'``, ``'C_chain_<ID>'`` and ``'O_chain_<ID>'``. Each value is a
-          ``list[list[float]]`` of length ``n_residues`` (0-based residue order) whose inner
-          list is the ``[x, y, z]`` position; atoms missing from the file are ``[nan, nan, nan]``.
-        - ``'name'``: structure name, obtained by dropping the trailing ``'.pdb'`` suffix
-          from ``path_to_pdb`` (see Notes).
-        - ``'num_of_chains'``: number of chains successfully parsed from this file.
-        - ``'seq'``: concatenation of the per-chain sequences listed above.
+            [
+                {
+                    'seq_chain_A': 'DGINQSGD...AIGLRYDF',                 # one-letter seq, '-' = gap
+                    'coords_chain_A': {
+                        'N_chain_A': [[-19.25, 70.285, 67.383], ..., [-21.355, 58.508, 65.054]],
+                        'CA_chain_A': [[-20.692, 70.114, 67.754], ..., [-21.536, 57.311, 65.859]],
+                        'C_chain_A': [[-21.367, 71.52, 67.682], ..., [-21.986, 57.626, 67.287]],
+                        'O_chain_A': [[-20.7, 72.627, 67.739], ..., [-21.707, 58.713, 67.813]],
+                    },                                                    # each array [n_res, 3]
+                    'seq_chain_C': 'DGINQSGD...AIGLRYDF',                 # same block for chain C
+                    'coords_chain_C': {
+                        'N_chain_C': [[-21.542, 35.964, 55.216], ..., [-17.101, 38.772, 66.224]],
+                        'CA_chain_C': [[-22.53, 35.35, 56.164], ..., [-17.514, 39.701, 67.273]],
+                        'C_chain_C': [[-23.242, 34.222, 55.387], ..., [-18.975, 40.035, 67.034]],
+                        'O_chain_C': [[-23.35, 34.196, 54.056], ..., [-19.63, 39.996, 65.956]],
+                    },
+                    'name': '6EHB',                                       # file name minus '.pdb'
+                    'num_of_chains': 2,                                   # chains parsed from file
+                    'seq': 'DGINQSGD...AIGLRYDFDGINQSGD...AIGLRYDF',      # chains concatenated
+                },
+            ]
 
-        Chains absent from the file are simply omitted, so their keys are absent too.
+        With ``ca_only=True``, ``'coords_chain_<ID>'`` holds only ``'CA_chain_<ID>'``. Atoms
+        missing from the file are stored as ``[nan, nan, nan]``; chains not present in the
+        file are omitted entirely, so their ``'seq_chain_<ID>'`` / ``'coords_chain_<ID>'``
+        keys are absent too.
 
     Notes:
         ``'name'`` is the bare file name with the ``'.pdb'`` extension removed, taken with
