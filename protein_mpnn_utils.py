@@ -1465,15 +1465,13 @@ class StructureDatasetPDB():
         for i, entry in enumerate(pdb_dict_list):
             # extract the one-letter amino acid sequence from the entry
             seq: str = entry['seq']
-            # extract the entry name (e.g. PDB code + chain IDentifier)
-            name: str = entry['name']
 
             # find any characters in the sequence that are not in the alphabet
             bad_chars: set[str] = set(seq).difference(alphabet_set)
             # if the sequence contains only valid characters
             if len(bad_chars) == 0:
                 # check whether the sequence length is within the allowed limit
-                if len(entry['seq']) <= max_length:
+                if len(seq) <= max_length:
                     # entry passed all filters; add it to the dataset
                     self.data.append(entry)
                 else:
@@ -1491,7 +1489,7 @@ class StructureDatasetPDB():
             if verbose and (i + 1) % 1000 == 0:
                 # compute elapsed time since the loop started
                 elapsed: float = time.time() - start
-                print(f'{len(self.data)} valid entries, {i+1} entries checked, {elapsed:.1f} s consumed')
+                print(f'{len(self.data)} valid entries, {i+1} entries checked, {elapsed:.1f} seconds consumed')
 
         # print discard summary after the loop finishes
         if verbose:
@@ -1514,7 +1512,6 @@ class StructureDatasetPDB():
         return self.data[idx]
 
 
-    
 class StructureLoader():
     def __init__(self, dataset, batch_size=100, shuffle=True,
         collate_fn=lambda x: x, drop_last=False):
