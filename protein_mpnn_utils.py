@@ -110,6 +110,7 @@ def _scores(
     # One negative log probability per sequence, shape = [...]
     return scores
 
+
 def _S_to_seq(residue_type_indices: torch.Tensor, mask: torch.Tensor) -> str:
     """Convert integer-encoded residue indices into a one-letter amino-acid sequence.
 
@@ -147,6 +148,7 @@ def _S_to_seq(residue_type_indices: torch.Tensor, mask: torch.Tensor) -> str:
     ])
     # One-letter sequence of the selected residues
     return seq
+
 
 def parse_PDB_biounits(
     pdb_path: str,
